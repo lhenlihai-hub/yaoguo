@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline/promises");
 const { createApplicationServices } = require("../application/appServices");
+const { runUninstall } = require("./uninstall");
 
 const PACKAGE_ROOT = path.resolve(__dirname, "../..");
 const PACKAGE_JSON = require(path.join(PACKAGE_ROOT, "package.json"));
@@ -82,6 +83,7 @@ function helpText() {
     "  yaoguo [选项] [任务]",
     "  echo '任务' | yaoguo [选项]",
     "  yaoguo                 进入交互会话",
+    "  yaoguo uninstall       卸载程序和运行数据，保留已发布成品",
     "",
     "选项：",
     "  --workspace <目录>     Agent 工作空间，默认当前目录",
@@ -357,6 +359,9 @@ async function runInteractive(services, terminal, session) {
 }
 
 async function main(argv = process.argv.slice(2), streams = {}) {
+  if (argv[0] === "uninstall") {
+    return runUninstall(argv.slice(1), { packageRoot: PACKAGE_ROOT, streams });
+  }
   const options = parseArgs(argv);
   if (options.help) {
     (streams.output || process.stdout).write(`${helpText()}\n`);

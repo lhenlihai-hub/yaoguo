@@ -3,7 +3,12 @@ set -eu
 
 PACKAGE_URL="${YAOGUO_INSTALL_PACKAGE_URL:-https://github.com/lhenlihai-hub/yaoguo/archive/refs/heads/main.tar.gz}"
 MINIMUM_NODE="22.19.0"
-FALLBACK_PREFIX="${HOME}/.local"
+INSTALL_ROOT="${YAOGUO_INSTALL_ROOT:-${HOME}/.yaoguo}"
+PREFIX="${INSTALL_ROOT}/app"
+COMMAND_DIR="${YAOGUO_COMMAND_DIR:-${HOME}/.local/bin}"
+PROFILE=""
+PROFILE_BLOCK_START="# >>> yaoguo >>>"
+PROFILE_BLOCK_END="# <<< yaoguo <<<"
 
 say() {
   printf '%s\n' "$1"
@@ -30,22 +35,31 @@ case "$(uname -s)" in
   *) fail "当前只支持 macOS 和 Linux。" ;;
 esac
 
-DEFAULT_PREFIX="$(npm config get prefix)"
-PREFIX="$DEFAULT_PREFIX"
-if ! mkdir -p "$DEFAULT_PREFIX/lib/node_modules" "$DEFAULT_PREFIX/bin" 2>/dev/null \
-  || [ ! -w "$DEFAULT_PREFIX/lib/node_modules" ] \
-  || [ ! -w "$DEFAULT_PREFIX/bin" ]; then
-  PREFIX="$FALLBACK_PREFIX"
-  mkdir -p "$PREFIX/lib/node_modules" "$PREFIX/bin"
-fi
+mkdir -p "$PREFIX/lib/node_modules" "$PREFIX/bin" "$COMMAND_DIR"
+
+for COMMAND in yaoguo 腰果; do
+  LINK="$COMMAND_DIR/$COMMAND"
+  TARGET="$PREFIX/bin/$COMMAND"
+  if [ -L "$LINK" ]; then
+    EXISTING_TARGET="$(readlink "$LINK")"
+    [ "$EXISTING_TARGET" = "$TARGET" ] || fail "命令已被其他程序占用：$LINK"
+  elif [ -e "$LINK" ]; then
+    fail "命令已被其他程序占用：$LINK"
+  fi
+done
 
 say "正在安装腰果…"
 npm install --global --prefix "$PREFIX" --omit=dev --no-audit --no-fund --loglevel=error "$PACKAGE_URL"
 
-BIN_DIR="$PREFIX/bin"
+for COMMAND in yaoguo 腰果; do
+  LINK="$COMMAND_DIR/$COMMAND"
+  TARGET="$PREFIX/bin/$COMMAND"
+  [ -L "$LINK" ] || ln -s "$TARGET" "$LINK"
+done
+
 PATH_READY=false
 case ":$PATH:" in
-  *":$BIN_DIR:"*) PATH_READY=true ;;
+  *":$COMMAND_DIR:"*) PATH_READY=true ;;
 esac
 
 if [ "$PATH_READY" = false ]; then
@@ -54,20 +68,36 @@ if [ "$PATH_READY" = false ]; then
     */zsh) PROFILE="${HOME}/.zprofile" ;;
     */bash) PROFILE="${HOME}/.bash_profile" ;;
   esac
-  MARKER="# 腰果命令"
-  if [ ! -f "$PROFILE" ] || ! grep -F "$MARKER" "$PROFILE" >/dev/null 2>&1; then
+  if [ ! -f "$PROFILE" ] || ! grep -F "$PROFILE_BLOCK_START" "$PROFILE" >/dev/null 2>&1; then
     {
-      printf '\n%s\n' "$MARKER"
-      printf 'export PATH="%s/bin:$PATH"\n' "$PREFIX"
+      printf '\n%s\n' "$PROFILE_BLOCK_START"
+      printf 'export PATH="%s:$PATH"\n' "$COMMAND_DIR"
+      printf '%s\n' "$PROFILE_BLOCK_END"
     } >> "$PROFILE"
   fi
 fi
 
-"$BIN_DIR/yaoguo" --version >/dev/null
+node -e '
+const fs = require("node:fs");
+const [file, installRoot, appPrefix, commandDir] = process.argv.slice(1);
+const manifest = {
+  kind: "yaoguo.install",
+  version: 1,
+  installRoot,
+  appPrefix,
+  runtimeRoot: `${installRoot}/runtime`,
+  artifactRoot: `${installRoot}/artifacts`,
+  commandLinks: [`${commandDir}/yaoguo`, `${commandDir}/腰果`]
+};
+fs.writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+' "$INSTALL_ROOT/install.json" "$INSTALL_ROOT" "$PREFIX" "$COMMAND_DIR"
+
+"$COMMAND_DIR/yaoguo" --version >/dev/null
 say "腰果已安装。"
 if [ "$PATH_READY" = true ]; then
   say "运行：腰果"
 else
   say "新建终端后运行：腰果"
-  say "若要在当前终端立即使用，请先执行：export PATH=\"$BIN_DIR:\$PATH\""
+  say "若要在当前终端立即使用，请先执行：export PATH=\"$COMMAND_DIR:\$PATH\""
 fi
+say "卸载：腰果 uninstall"

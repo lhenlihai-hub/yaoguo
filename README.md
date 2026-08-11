@@ -97,7 +97,15 @@ export DEEPSEEK_API_KEY="你的密钥"
 腰果
 ```
 
-`yaoguo` 是等价的英文命令。安装器只写入当前用户的 npm 目录；若该目录不可写，则回退到 `~/.local` 并为后续新终端配置 `PATH`。安装前可先在浏览器中[审阅脚本](install.sh)；已知上游依赖例外见[生产依赖安全记录](docs/DEPENDENCY_SECURITY.md)。
+`yaoguo` 是等价的英文命令。程序、运行数据与记忆统一放在 `~/.yaoguo`，只在 `~/.local/bin` 留下两个命令链接。安装前可先在浏览器中[审阅脚本](install.sh)；已知上游依赖例外见[生产依赖安全记录](docs/DEPENDENCY_SECURITY.md)。
+
+完全卸载：
+
+```bash
+腰果 uninstall
+```
+
+卸载器会删除程序、命令链接、会话、配置、Token 记录和长期记忆，并清理安装器写入的 `PATH` 配置。已发布成品会先归档到 `~/.yaoguo/artifacts`；用户工作目录中的文件不会被删除。
 
 开发者也可以从源码安装：
 

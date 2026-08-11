@@ -146,6 +146,9 @@ function inspectTerminalInstaller() {
   if (!installer.startsWith("#!/bin/sh\n") || /\bsudo\b/.test(installer)) {
     failures.push("安装脚本必须使用 POSIX sh 且不得要求 sudo");
   }
+  if (!installer.includes('${HOME}/.yaoguo') || !installer.includes("install.json")) {
+    failures.push("安装脚本必须使用腰果专属目录并写入可验证的安装记录");
+  }
   if (!readme.includes("curl -fsSL https://raw.githubusercontent.com/lhenlihai-hub/yaoguo/main/install.sh | sh")) {
     failures.push("README 缺少标准一行安装命令");
   }
