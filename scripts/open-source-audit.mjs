@@ -8,7 +8,8 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const allowPendingMetadata = process.argv.includes("--allow-pending-metadata");
 const allowHistoryData = process.argv.includes("--allow-history-data");
-const releaseTree = process.argv.includes("--release-tree");
+const terminalReleaseTree = process.argv.includes("--release-tree");
+const desktopReleaseTree = process.argv.includes("--desktop-release-tree");
 const failures = [];
 const warnings = [];
 
@@ -107,18 +108,19 @@ function inspectHistory() {
 }
 
 function inspectRequiredDocuments() {
-  const publicDocuments = [
+  const sharedDocuments = [
     "README.md",
     "CONTRIBUTING.md",
     "SECURITY.md",
     "CODE_OF_CONDUCT.md",
     "THIRD_PARTY_NOTICES.md",
-    "docs/DEPENDENCY_SECURITY.md",
-    "docs/terminal.md"
+    "docs/DEPENDENCY_SECURITY.md"
   ];
-  const required = releaseTree
-    ? publicDocuments
-    : [...publicDocuments, "docs/OPEN_SOURCE_CHECKLIST.md", "docs/REPOSITORY_SPLIT.md"];
+  const required = terminalReleaseTree
+    ? [...sharedDocuments, "docs/terminal.md"]
+    : desktopReleaseTree
+      ? sharedDocuments
+      : [...sharedDocuments, "docs/terminal.md", "docs/OPEN_SOURCE_CHECKLIST.md", "docs/REPOSITORY_SPLIT.md"];
   const missing = required.filter((file) => {
     try {
       return !statSync(join(root, file)).isFile();
@@ -136,10 +138,16 @@ function inspectPublicPositioning() {
   if (!`${pkg.author || ""}`.includes("刘海涛") || !`${pkg.author || ""}`.includes("319895455@qq.com")) {
     failures.push("package.json 缺少已确认的版权主体或联系邮箱");
   }
-  if (!readme.includes("Pi") || !readme.includes("DeepSeek")) {
-    failures.push("公开 README 必须明确 Pi 基础与 DeepSeek-only 边界");
+  if (desktopReleaseTree) {
+    if (!readme.includes("DeepSeek") || !/桌面|Electron/.test(readme)) {
+      failures.push("桌面版 README 必须明确产品形态与 DeepSeek-only 边界");
+    }
+  } else {
+    if (!readme.includes("Pi") || !readme.includes("DeepSeek")) {
+      failures.push("公开 README 必须明确 Pi 基础与 DeepSeek-only 边界");
+    }
+    if (/桌面|Electron/.test(readme)) failures.push("终端公开 README 不得宣传尚未公开的桌面产品");
   }
-  if (/桌面|Electron/.test(readme)) failures.push("终端公开 README 不得宣传尚未公开的桌面产品");
   if (!security.includes("319895455@qq.com")) failures.push("SECURITY.md 缺少私密联系邮箱");
 }
 
