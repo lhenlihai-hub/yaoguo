@@ -12,12 +12,16 @@ const {
   helpText,
   createApprovalHandler,
   ensureModelAvailable,
+  isModelCommand,
+  modelConfiguration,
+  runModelMenu,
   formatUsage,
   isUsageCommand,
   sessionUsage,
   workspaceTaskId,
   resolveWorkspaceSelection,
-  resolveSession
+  resolveSession,
+  runInteractive
 } = require("../src/cli/cli.js");
 
 test("CLI 参数同时支持选项、位置任务和显式分隔符", () => {
@@ -102,6 +106,74 @@ test("CLI 检查模型密钥并只持久化启用状态", async () => {
   await ensureModelAvailable(service, { DEEPSEEK_API_KEY: "local-test-key" });
   assert.equal(settings.deepseek.enabled, true);
   assert.equal("apiKey" in settings.deepseek, false);
+});
+
+test("CLI /model 选择 Flash 并通过隐藏输入保存本机 API Key", async () => {
+  let settings = {
+    deepseek: {
+      enabled: false,
+      apiKeyEnv: "DEEPSEEK_API_KEY",
+      model: "deepseek-v4-pro"
+    }
+  };
+  const settingsService = {
+    async get() { return structuredClone(settings); },
+    async mutate(operation) {
+      const next = structuredClone(settings);
+      await operation(next);
+      settings = next;
+      return structuredClone(settings);
+    }
+  };
+  const answers = ["2", "sk-test-secret"];
+  const output = [];
+  const terminal = {
+    interactive: true,
+    error: { write(value) { output.push(`${value}`); } },
+    readlineState: { hidden: false },
+    rl: {
+      history: ["sk-test-secret"],
+      async question() { return answers.shift(); }
+    }
+  };
+  const configured = await runModelMenu(settingsService, terminal, {});
+  assert.equal(isModelCommand(" /MODEL "), true);
+  assert.equal(configured.model, "deepseek-v4-flash");
+  assert.equal(configured.keySource, "本机私有配置");
+  assert.equal(settings.deepseek.enabled, true);
+  assert.equal(settings.deepseek.apiKey, "sk-test-secret");
+  assert.equal(terminal.readlineState.hidden, false);
+  assert.deepEqual(terminal.rl.history, []);
+  assert.doesNotMatch(output.join(""), /sk-test-secret/);
+  assert.deepEqual(await modelConfiguration(settingsService, {}), configured);
+});
+
+test("CLI 无 API Key 仍可进入交互终端，普通消息只提示 /model", async () => {
+  const output = [];
+  const messages = ["你好", "/exit"];
+  let modelCalls = 0;
+  const terminal = {
+    error: { write(value) { output.push(`${value}`); } },
+    rl: { async question() { return messages.shift(); } },
+    exitRequested: false
+  };
+  await runInteractive({
+    settingsService: {
+      async get() {
+        return { deepseek: { model: "deepseek-v4-pro", apiKeyEnv: "DEEPSEEK_API_KEY" } };
+      }
+    },
+    workflowEngine: {
+      async submitAgentInput() { modelCalls += 1; }
+    }
+  }, terminal, {
+    project: { id: "terminal" },
+    task: { id: "task" },
+    workspacePath: "/tmp/workspace"
+  }, {});
+  assert.equal(modelCalls, 0);
+  assert.match(output.join(""), /API Key 未配置/);
+  assert.match(output.join(""), /输入 \/model/);
 });
 
 test("CLI 默认按 canonical 工作空间复用稳定会话", async () => {

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -94,6 +94,7 @@ test("SettingsService 把本地 Bridge token 拆分到 local 配置", async () =
   assert.equal(settings.bridge.token, localSettings.bridge.token);
   assert.equal(publicSettings.bridge.token, undefined);
   assert.notEqual(settings.bridge.token, "local-change-me");
+  assert.equal((await stat(paths.settingsLocalFile)).mode & 0o777, 0o600);
 });
 
 test("SettingsService 只持久化完整文件系统访问总开关", async () => {

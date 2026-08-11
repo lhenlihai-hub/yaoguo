@@ -25,11 +25,13 @@ async function readJson(file, fallback) {
   return JSON.parse(content);
 }
 
-async function writeJsonAtomic(file, data) {
+async function writeJsonAtomic(file, data, mode = null) {
   await ensureDir(path.dirname(file));
   const temp = file + "." + crypto.randomUUID() + ".tmp";
-  await fsp.writeFile(temp, JSON.stringify(data, null, 2) + "\n", "utf8");
+  const options = mode === null ? "utf8" : { encoding: "utf8", mode };
+  await fsp.writeFile(temp, JSON.stringify(data, null, 2) + "\n", options);
   await fsp.rename(temp, file);
+  if (mode !== null) await fsp.chmod(file, mode);
 }
 
 const DEFAULT_SETTINGS = {
@@ -438,8 +440,9 @@ class SettingsService {
       await writeJsonAtomic(this.paths.settingsFile, merged);
     }
     if (JSON.stringify(local) !== JSON.stringify(migratedLocal)) {
-      await writeJsonAtomic(this.paths.settingsLocalFile, migratedLocal);
+      await writeJsonAtomic(this.paths.settingsLocalFile, migratedLocal, 0o600);
     }
+    await fsp.chmod(this.paths.settingsLocalFile, 0o600);
   }
 
   async get() {
@@ -473,7 +476,7 @@ class SettingsService {
     }
     const { publicSettings, localSettings } = splitSettingsForStorage(nextSettings);
     await writeJsonAtomic(this.paths.settingsFile, stripSensitiveSettings(mergeSettings(publicSettings)));
-    await writeJsonAtomic(this.paths.settingsLocalFile, localSettings);
+    await writeJsonAtomic(this.paths.settingsLocalFile, localSettings, 0o600);
     return this.get();
   }
 

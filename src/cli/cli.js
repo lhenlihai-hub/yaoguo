@@ -6,6 +6,7 @@ const fsp = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline/promises");
+const { Writable } = require("node:stream");
 const { createApplicationServices } = require("../application/appServices");
 const { isPathInside } = require("../platform/shared/pathSafety");
 const { runUninstall } = require("./uninstall");
@@ -101,6 +102,7 @@ function helpText() {
     "  -V, --version           显示版本",
     "",
     "交互命令：",
+    "  /model                  选择 Pro / Flash，并设置 DeepSeek API Key",
     "  /usage                  查看当前会话累计 token 与缓存命中",
     "  /tokens                 /usage 的别名",
     "  /exit                   退出交互会话",
@@ -114,15 +116,26 @@ function createTerminal(options = {}, streams = {}) {
   const output = streams.output || process.stdout;
   const error = streams.error || process.stderr;
   const interactive = Boolean(input.isTTY && error.isTTY);
+  const readlineState = { hidden: false };
+  const readlineOutput = new Writable({
+    write(chunk, encoding, callback) {
+      if (!readlineState.hidden) error.write(chunk, encoding);
+      callback();
+    }
+  });
+  readlineOutput.isTTY = interactive;
+  readlineOutput.columns = Number(error.columns) || 80;
+  readlineOutput.rows = Number(error.rows) || 24;
   const rl = readline.createInterface({
     input,
-    output: error,
+    output: readlineOutput,
     terminal: interactive,
     historySize: 100,
     removeHistoryDuplicates: true
   });
   const terminal = {
     input, output, error, interactive, rl, options,
+    readlineState,
     activeController: null,
     exitRequested: false
   };
@@ -170,12 +183,103 @@ async function ensureModelAvailable(settingsService, env = process.env) {
   const config = settings.deepseek || {};
   const envName = `${config.apiKeyEnv || "DEEPSEEK_API_KEY"}`;
   if (!config.apiKey && !env[envName]) {
-    throw new Error(`缺少 DeepSeek API Key。请先设置环境变量 ${envName}。`);
+    throw new Error(`缺少 DeepSeek API Key。请设置环境变量 ${envName}，或进入交互终端后输入 /model。`);
   }
   if (!config.enabled) {
     await settingsService.mutate((next) => {
       next.deepseek = { ...(next.deepseek || {}), enabled: true };
     });
+  }
+}
+
+function isModelCommand(message = "") {
+  return `${message || ""}`.trim().toLowerCase() === "/model";
+}
+
+async function modelConfiguration(settingsService, env = process.env) {
+  const settings = await settingsService.get();
+  const config = settings.deepseek || {};
+  const envName = `${config.apiKeyEnv || "DEEPSEEK_API_KEY"}`;
+  const model = config.model === "deepseek-v4-flash" ? "deepseek-v4-flash" : "deepseek-v4-pro";
+  const keySource = config.apiKey
+    ? "本机私有配置"
+    : (env[envName] ? `环境变量 ${envName}` : "未配置");
+  return {
+    model,
+    modelLabel: model === "deepseek-v4-flash" ? "Flash" : "Pro",
+    keySource,
+    available: Boolean(config.apiKey || env[envName])
+  };
+}
+
+function forgetReadlineValue(rl, value) {
+  if (!Array.isArray(rl?.history) || !value) return;
+  for (let index = rl.history.length - 1; index >= 0; index -= 1) {
+    if (rl.history[index] === value) rl.history.splice(index, 1);
+  }
+}
+
+async function readSecret(terminal, prompt) {
+  if (!terminal.interactive) throw new Error("API Key 只能在交互终端中输入。");
+  terminal.error.write(prompt);
+  if (terminal.readlineState) terminal.readlineState.hidden = true;
+  let value = "";
+  try {
+    value = await terminal.rl.question("");
+    return `${value || ""}`.trim();
+  } finally {
+    forgetReadlineValue(terminal.rl, value);
+    if (terminal.readlineState) terminal.readlineState.hidden = false;
+    terminal.error.write("\n");
+  }
+}
+
+async function saveDeepSeekSettings(settingsService, patch = {}) {
+  return settingsService.mutate((settings) => {
+    settings.deepseek = {
+      ...(settings.deepseek || {}),
+      ...patch,
+      enabled: true
+    };
+  });
+}
+
+async function runModelMenu(settingsService, terminal, env = process.env) {
+  while (true) {
+    const current = await modelConfiguration(settingsService, env);
+    terminal.error.write([
+      "\n模型设置",
+      `\n当前：${current.modelLabel} · API Key ${current.keySource}`,
+      "\n1. Pro",
+      "\n2. Flash",
+      "\n3. 设置或更新 API Key",
+      "\n0. 返回\n"
+    ].join(""));
+    const choice = (await terminal.rl.question("选择 [0-3]：")).trim().toLowerCase();
+    if (["", "0", "q"].includes(choice)) return current;
+    if (["1", "2"].includes(choice)) {
+      const model = choice === "1" ? "deepseek-v4-pro" : "deepseek-v4-flash";
+      await saveDeepSeekSettings(settingsService, { model });
+      const next = await modelConfiguration(settingsService, env);
+      terminal.error.write(`已选择 ${next.modelLabel}。\n`);
+      if (!next.available) {
+        const apiKey = await readSecret(terminal, "粘贴 DeepSeek API Key（输入已隐藏，留空跳过）：");
+        if (apiKey) {
+          await saveDeepSeekSettings(settingsService, { apiKey });
+          terminal.error.write("API Key 已保存到本机私有配置。\n");
+        }
+      }
+      return modelConfiguration(settingsService, env);
+    }
+    if (["3", "k", "key"].includes(choice)) {
+      const apiKey = await readSecret(terminal, "粘贴 DeepSeek API Key（输入已隐藏，留空取消）：");
+      if (apiKey) {
+        await saveDeepSeekSettings(settingsService, { apiKey });
+        terminal.error.write("API Key 已保存到本机私有配置。\n");
+      }
+      return modelConfiguration(settingsService, env);
+    }
+    terminal.error.write("请输入 0、1、2 或 3。\n");
   }
 }
 
@@ -366,8 +470,15 @@ async function stopServices(services) {
   ].filter(Boolean));
 }
 
-async function runInteractive(services, terminal, session) {
-  terminal.error.write(`腰果终端版 ${PACKAGE_JSON.version}\n工作空间：${session.workspacePath}\n输入 /exit 退出。\n\n`);
+async function runInteractive(services, terminal, session, env = process.env) {
+  const initialModel = await modelConfiguration(services.settingsService, env);
+  terminal.error.write([
+    `腰果终端版 ${PACKAGE_JSON.version}`,
+    `\n工作空间：${session.workspacePath}`,
+    `\n模型：${initialModel.modelLabel} · API Key ${initialModel.keySource}`,
+    initialModel.available ? "" : "\n输入 /model 完成模型与 API Key 设置。",
+    "\n输入 /exit 退出。\n\n"
+  ].join(""));
   while (true) {
     let message;
     try {
@@ -377,9 +488,20 @@ async function runInteractive(services, terminal, session) {
     }
     if (!message) continue;
     if (["/exit", "/quit"].includes(message.toLowerCase())) break;
+    if (isModelCommand(message)) {
+      await runModelMenu(services.settingsService, terminal, env);
+      terminal.error.write("\n");
+      continue;
+    }
     if (isUsageCommand(message)) {
       await printSessionUsage(services, terminal, session);
       terminal.error.write("\n");
+      continue;
+    }
+    try {
+      await ensureModelAvailable(services.settingsService, env);
+    } catch (error) {
+      terminal.error.write(`${error?.message || error}\n\n`);
       continue;
     }
     terminal.error.write("腰果 > ");
@@ -418,11 +540,17 @@ async function main(argv = process.argv.slice(2), streams = {}) {
     const session = await resolveSession(services, options);
     const prompt = options.prompt;
     if (prompt && isUsageCommand(prompt)) await printSessionUsage(services, terminal, session);
-    else {
+    else if (prompt && isModelCommand(prompt)) {
+      if (!terminal.interactive) throw new Error("/model 只能在交互终端中使用。");
+      await runModelMenu(services.settingsService, terminal);
+    }
+    else if (prompt) {
       await ensureModelAvailable(services.settingsService);
-      if (prompt) await runTurn(services, terminal, session, prompt);
-      else if (terminal.interactive) await runInteractive(services, terminal, session);
-      else throw new Error("没有收到任务内容。请通过参数或 stdin 提供任务。");
+      await runTurn(services, terminal, session, prompt);
+    }
+    else if (terminal.interactive) await runInteractive(services, terminal, session);
+    else {
+      throw new Error("没有收到任务内容。请通过参数或 stdin 提供任务。");
     }
     return 0;
   } finally {
@@ -448,6 +576,9 @@ module.exports = {
   helpText,
   createApprovalHandler,
   ensureModelAvailable,
+  isModelCommand,
+  modelConfiguration,
+  runModelMenu,
   formatUsage,
   isUsageCommand,
   sessionUsage,
@@ -455,5 +586,6 @@ module.exports = {
   resolveWorkspaceSelection,
   resolveSession,
   runTurn,
+  runInteractive,
   main
 };

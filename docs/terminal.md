@@ -10,13 +10,14 @@
 curl -fsSL https://raw.githubusercontent.com/lhenlihai-hub/yaoguo/main/install.sh | sh
 ```
 
-安装完成后，中文与英文命令等价：
+安装完成后直接启动，中文与英文命令等价：
 
 ```bash
-export DEEPSEEK_API_KEY="你的密钥"
 腰果
-yaoguo "阅读当前目录并给出改进建议"
+yaoguo
 ```
+
+首次进入后输入 `/model`，选择 Pro 或 Flash，并在隐藏输入中粘贴 DeepSeek API Key。也可以继续通过 `export DEEPSEEK_API_KEY="你的密钥"` 配置环境变量；非交互任务需要提前使用其中一种方式完成配置。
 
 程序、会话、配置和记忆都收口在 `~/.yaoguo`；`~/.local/bin` 只有 `yaoguo` 与 `腰果` 两个命令链接。如果 `~/.local/bin` 尚未加入 `PATH`，安装器会更新当前 shell 的启动文件；管道脚本无法修改父 shell，因此需要新开终端，或按提示执行一次 `export PATH=...`。
 
@@ -69,6 +70,12 @@ printf '%s\n' '总结 README.md' | npm run cli
 ```
 
 `YAOGUO_HOME` 可设置默认运行数据目录，显式 `--data-dir` 的优先级更高。直接在用户主目录运行 `腰果` 时，CLI 会创建并使用独立的 `~/Yaoguo Workspace`，避免把包含腰果内部数据的整个主目录交给 Agent；显式指定与内部数据重叠的 `--workspace` 仍会被拒绝。默认会话按工作空间的 canonical path 生成稳定 ID，因此回到同一目录会继续原会话；`--new` 会创建独立会话。
+
+## 模型与 API Key
+
+交互终端即使尚未配置 API Key 也能正常打开。输入 `/model` 可选择 Pro 或 Flash，并设置或更新 DeepSeek API Key；密钥输入不会回显，也不会保留在终端历史中，保存后进入本机私有配置文件。环境变量 `DEEPSEEK_API_KEY` 仍然有效，本机配置优先于环境变量。
+
+直接执行单次任务或通过 stdin 调用时不会打开设置菜单；若两种位置都没有密钥，进程会返回明确错误与退出码 `1`。
 
 ## Agent 状态与 token
 

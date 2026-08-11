@@ -90,12 +90,13 @@
 curl -fsSL https://raw.githubusercontent.com/lhenlihai-hub/yaoguo/main/install.sh | sh
 ```
 
-安装后配置 DeepSeek API Key，然后在任意工作目录启动：
+安装后可以直接启动：
 
 ```bash
-export DEEPSEEK_API_KEY="你的密钥"
 腰果
 ```
+
+首次进入后输入 `/model`，选择 Pro 或 Flash，并通过隐藏输入保存 DeepSeek API Key。也可以继续使用 `export DEEPSEEK_API_KEY="你的密钥"`；单次命令和 stdin 等非交互调用需要提前完成其中一种配置。
 
 `yaoguo` 是等价的英文命令。程序、运行数据与记忆统一放在 `~/.yaoguo`，只在 `~/.local/bin` 留下两个命令链接。安装前可先在浏览器中[审阅脚本](install.sh)；已知上游依赖例外见[生产依赖安全记录](docs/DEPENDENCY_SECURITY.md)。
 
@@ -142,6 +143,7 @@ yaoguo "检查当前目录中的测试失败"
 ```text
 /usage   当前会话累计 token 与缓存命中
 /tokens  /usage 的别名
+/model   选择 Pro / Flash，并设置 DeepSeek API Key
 /exit    退出
 ```
 
