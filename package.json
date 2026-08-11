@@ -14,7 +14,8 @@
     "url": "https://github.com/lhenlihai-hub/yaoguo/issues"
   },
   "bin": {
-    "yaoguo": "src/cli/cli.js"
+    "yaoguo": "src/cli/cli.js",
+    "腰果": "src/cli/cli.js"
   },
   "files": [
     "src/",
@@ -39,8 +40,7 @@
     "check:open-source": "node scripts/open-source-audit.mjs --release-tree",
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.mjs",
-    "test:coverage": "c8 --reporter=text --reporter=html --reporter=json-summary --reports-dir=coverage node --test tests/*.test.mjs",
-    "prepare": "husky"
+    "test:coverage": "c8 --reporter=text --reporter=html --reporter=json-summary --reports-dir=coverage node --test tests/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

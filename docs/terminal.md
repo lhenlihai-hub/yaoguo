@@ -4,6 +4,24 @@
 
 ## 快速开始
 
+一行安装：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lhenlihai-hub/yaoguo/main/install.sh | sh
+```
+
+安装完成后，中文与英文命令等价：
+
+```bash
+export DEEPSEEK_API_KEY="你的密钥"
+腰果
+yaoguo "阅读当前目录并给出改进建议"
+```
+
+如果当前 npm 的全局目录不可写，安装器会使用 `~/.local` 并更新当前 shell 的启动文件。由于管道脚本无法修改父 shell 的环境，这种回退情况下需要新开一个终端，或按安装器的提示执行一次 `export PATH=...`。
+
+从源码运行：
+
 ```bash
 npm install
 export DEEPSEEK_API_KEY="你的密钥"
@@ -22,7 +40,7 @@ npm run cli
 printf '%s\n' '总结 README.md' | npm run cli
 ```
 
-如果通过 `npm link` 建立了本地命令，可把 `npm run cli --` 换成 `yaoguo`。
+如果通过 `npm link` 建立了本地命令，可把 `npm run cli --` 换成 `yaoguo` 或 `腰果`。
 
 ## 参数
 

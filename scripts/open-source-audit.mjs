@@ -117,7 +117,7 @@ function inspectRequiredDocuments() {
     "docs/DEPENDENCY_SECURITY.md"
   ];
   const required = terminalReleaseTree
-    ? [...sharedDocuments, "docs/terminal.md"]
+    ? [...sharedDocuments, "docs/terminal.md", "install.sh"]
     : desktopReleaseTree
       ? sharedDocuments
       : [...sharedDocuments, "docs/terminal.md", "docs/OPEN_SOURCE_CHECKLIST.md", "docs/REPOSITORY_SPLIT.md"];
@@ -129,6 +129,26 @@ function inspectRequiredDocuments() {
     }
   });
   if (missing.length) failures.push(`缺少开源文档：${missing.join("，")}`);
+}
+
+function inspectTerminalInstaller() {
+  if (!terminalReleaseTree) return;
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  const readme = readFileSync(join(root, "README.md"), "utf8");
+  const installerPath = join(root, "install.sh");
+  const installer = readFileSync(installerPath, "utf8");
+  const executable = (statSync(installerPath).mode & 0o111) !== 0;
+  if (pkg.bin?.yaoguo !== "src/cli/cli.js" || pkg.bin?.["腰果"] !== "src/cli/cli.js") {
+    failures.push("终端发布包必须提供 yaoguo / 腰果双命令");
+  }
+  if (pkg.scripts?.prepare) failures.push("终端发布包不得在用户安装时运行 prepare");
+  if (!executable) failures.push("install.sh 必须可执行");
+  if (!installer.startsWith("#!/bin/sh\n") || /\bsudo\b/.test(installer)) {
+    failures.push("安装脚本必须使用 POSIX sh 且不得要求 sudo");
+  }
+  if (!readme.includes("curl -fsSL https://raw.githubusercontent.com/lhenlihai-hub/yaoguo/main/install.sh | sh")) {
+    failures.push("README 缺少标准一行安装命令");
+  }
 }
 
 function inspectPublicPositioning() {
@@ -158,6 +178,7 @@ inspectMetadata();
 inspectHistory();
 inspectRequiredDocuments();
 inspectPublicPositioning();
+inspectTerminalInstaller();
 
 for (const warning of warnings) process.stdout.write(`WARN  ${warning}\n`);
 for (const failure of failures) process.stderr.write(`FAIL  ${failure}\n`);

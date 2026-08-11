@@ -84,6 +84,23 @@
 
 ## 开始使用
 
+推荐使用一行安装（不需要 `sudo`）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lhenlihai-hub/yaoguo/main/install.sh | sh
+```
+
+安装后配置 DeepSeek API Key，然后在任意工作目录启动：
+
+```bash
+export DEEPSEEK_API_KEY="你的密钥"
+腰果
+```
+
+`yaoguo` 是等价的英文命令。安装器只写入当前用户的 npm 目录；若该目录不可写，则回退到 `~/.local` 并为后续新终端配置 `PATH`。安装前可先在浏览器中[审阅脚本](install.sh)；已知上游依赖例外见[生产依赖安全记录](docs/DEPENDENCY_SECURITY.md)。
+
+开发者也可以从源码安装：
+
 ```bash
 git clone https://github.com/lhenlihai-hub/yaoguo.git
 cd yaoguo
@@ -104,9 +121,10 @@ npm run cli -- "阅读当前项目并说明它的结构"
 printf '%s\n' '总结 README.md' | npm run cli
 ```
 
-通过 `npm link` 建立本地命令后，可以直接使用：
+通过一行安装或 `npm link` 建立命令后，可以直接使用：
 
 ```bash
+腰果
 yaoguo
 yaoguo "检查当前目录中的测试失败"
 ```
