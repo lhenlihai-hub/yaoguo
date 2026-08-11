@@ -1125,6 +1125,10 @@ test("bash 取消时同一进程组的后台任务一并回收", async () => {
     await assert.rejects(execution, /aborted/i);
     await new Promise((resolve) => setTimeout(resolve, 400));
     await assert.rejects(readFile(path.join(workDir, "abort-escaped.txt"), "utf8"), /ENOENT/);
+    const cleanupDeadline = Date.now() + 2_000;
+    while (sandbox.activeProcessGroups.size > 0 && Date.now() < cleanupDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
     assert.equal(sandbox.activeProcessGroups.size, 0);
   } finally {
     await tools?.cleanup();
