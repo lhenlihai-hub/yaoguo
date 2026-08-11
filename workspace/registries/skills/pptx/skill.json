@@ -1,0 +1,114 @@
+{
+  "id": "skill://pptx@1",
+  "kind": "skill",
+  "trust": "bundled",
+  "version": 1,
+  "title": "PPT 演示文稿",
+  "format": "pptx",
+  "entry": {
+    "create": {
+      "description": "按 Markdown 标题结构与宿主提供的已验证图片生成可编辑 .pptx 幻灯片。",
+      "runtime": "node",
+      "script": "scripts/create.js",
+      "sideEffects": "workspace_write",
+      "idempotent": true,
+      "timeoutMs": 120000,
+      "pathParams": { "read": [], "write": ["outputPath"] },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "object",
+            "properties": { "markdown": { "type": "string", "minLength": 1 } },
+            "required": ["markdown"],
+            "additionalProperties": false
+          },
+          "outputPath": { "type": "string", "minLength": 1 },
+          "options": {
+            "type": "object",
+            "properties": {
+              "title": {},
+              "author": {},
+              "pageSize": { "type": "string", "enum": ["wide", "a4"] },
+              "images": {
+                "type": "array",
+                "maxItems": 4,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "data": { "type": "string", "pattern": "^data:image/" },
+                    "width": { "type": "integer", "minimum": 1, "maximum": 100000 },
+                    "height": { "type": "integer", "minimum": 1, "maximum": 100000 },
+                    "title": { "type": "string" },
+                    "credit": { "type": "string" }
+                  },
+                  "required": ["data", "width", "height"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": ["source", "outputPath"],
+        "additionalProperties": false
+      }
+    },
+    "validate": {
+      "description": "检查 .pptx 的 OOXML 容器、核心部件、幻灯片与内部协议泄漏。",
+      "runtime": "node",
+      "script": "scripts/validate.js",
+      "sideEffects": "none",
+      "idempotent": true,
+      "timeoutMs": 30000,
+      "pathParams": { "read": ["inputPath"], "write": [] },
+      "inputSchema": {
+        "type": "object",
+        "properties": { "inputPath": { "type": "string", "minLength": 1 } },
+        "required": ["inputPath"],
+        "additionalProperties": false
+      }
+    },
+    "preview": {
+      "description": "把 .pptx 渲染为 PDF 预览。",
+      "runtime": "node",
+      "script": "scripts/preview.js",
+      "sideEffects": "workspace_write",
+      "idempotent": true,
+      "timeoutMs": 120000,
+      "pathParams": { "read": ["inputPath"], "write": ["outputDir"] },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "inputPath": { "type": "string", "minLength": 1 },
+          "outputDir": { "type": "string", "minLength": 1 },
+          "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 120000 }
+        },
+        "required": ["inputPath", "outputDir"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "dependencies": [
+    { "id": "pptxgenjs", "kind": "npm", "version": "4.0.1", "required": true, "for": ["create"] },
+    { "id": "marked", "kind": "npm", "version": "^14.0.0", "required": true, "for": ["create"] },
+    { "id": "jszip", "kind": "npm", "version": "^3.10.1", "required": true, "for": ["validate"] },
+    {
+      "id": "libreoffice",
+      "kind": "binary",
+      "required": true,
+      "for": ["preview"],
+      "purpose": "pptx → PDF 预览渲染",
+      "missingHint": "未安装 LibreOffice：PPT 仍可生成和下载，但无法内嵌预览。"
+    }
+  ],
+  "triggers": {
+    "intents": ["导出 ppt", "生成 ppt", "幻灯片", "演示文稿", "slides", "export pptx"],
+    "extensions": [".pptx", ".ppt"],
+    "outputFormats": ["pptx"]
+  },
+  "outputContract": { "create": { "mimeType": "application/vnd.openxmlformats-officedocument.presentationml.presentation", "extension": "pptx" } },
+  "safety": { "networkAccess": false, "fileWrite": "scoped", "requiresUserConfirm": false },
+  "exposure": { "mode": "orchestrated", "tool": "generate_document" },
+  "instructionsRef": "SKILL.md"
+}

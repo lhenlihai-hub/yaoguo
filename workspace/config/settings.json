@@ -1,0 +1,99 @@
+{
+  "memory": {
+    "maxContextChars": 52000,
+    "protectedFiles": []
+  },
+  "deepseek": {
+    "enabled": true,
+    "baseUrl": "https://api.deepseek.com",
+    "apiKeyEnv": "DEEPSEEK_API_KEY",
+    "model": "deepseek-v4-pro",
+    "thinking": "max",
+    "temperature": 0.65
+  },
+  "permissions": {
+    "fileSystem": {
+      "fullAccess": false
+    }
+  },
+  "fileStorage": {
+    "keepStepOutputs": true
+  },
+  "timeouts": {
+    "ttftDefaultMs": 60000,
+    "idleDefaultMs": 90000,
+    "wallDefaultMs": 600000,
+    "ttftReasoningMs": 240000,
+    "idleReasoningMs": 180000,
+    "wallReasoningMs": 1500000
+  },
+  "webSearch": {
+    "enabled": false,
+    "provider": "tavily",
+    "apiKeyEnv": "TAVILY_API_KEY",
+    "endpoint": "https://api.tavily.com/search",
+    "market": "zh-CN",
+    "count": 8,
+    "publicFallback": true,
+    "publicProvider": "jina",
+    "publicEndpoint": "https://www.bing.com/search"
+  },
+  "referenceSearch": {
+    "maxInternetResults": 18,
+    "maxLocalResults": 30,
+    "maxPreviewChars": 18000,
+    "maxLocalFileBytes": 1200000,
+    "localExtensions": [
+      ".md",
+      ".txt",
+      ".json",
+      ".html",
+      ".css",
+      ".js",
+      ".mjs",
+      ".cjs",
+      ".csv"
+    ]
+  },
+  "bridge": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 37521
+  },
+  "context": {
+    "tokenBudgets": {
+      "defaultModelTokens": 128000,
+      "outputReserveTokens": 6000,
+      "models": {
+        "deepseek-v4-pro": 1000000,
+        "deepseek-v4-flash": 1000000
+      }
+    },
+    "compaction": {
+      "enabled": true,
+      "thresholdRatio": 0.75,
+      "trimFactor": 0.5,
+      "keepRecentSteps": 2,
+      "agentHistoryReadLimit": 160,
+      "agentHistoryTokens": 12000,
+      "runContextTokens": 10000,
+      "targetSummaryTokens": 1800,
+      "maxSummaryInputTokens": 22000,
+      "recentRawTokens": 2400,
+      "skipIfDeltaTokensBelow": 600,
+      "clearAtLeastRatio": 0.3
+    },
+    "agentLoop": {
+      "enabled": true,
+      "triggerRatio": 0.6,
+      "maxActiveTokens": 160000,
+      "clearStartRatio": 0.72,
+      "inlineToolResultTokens": 10000,
+      "toolResultPreviewTokens": 1800,
+      "keepRecentToolGroups": 2,
+      "checkpointMaxEvents": 24,
+      "checkpointArgumentChars": 600,
+      "checkpointPreviewChars": 320
+    }
+  }
+}

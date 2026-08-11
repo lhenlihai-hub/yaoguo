@@ -1,0 +1,32 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+# 打包产物绝不进版本库（历史上误提交过根级 .zip，撑大 .git 到 878M）
+*.dmg
+*.zip
+*.tgz
+workspace/chats/
+workspace/memory/archive/
+workspace/private/
+workspace/projects/
+workspace/runs/
+workspace/assets/*
+!workspace/assets/.gitkeep
+# 文学语料原文属于可重建的大体量缓存；只提交清单、工具与空目录。
+workspace/corpus/*
+!workspace/corpus/.gitkeep
+workspace/schedules/*
+!workspace/schedules/jobs.json
+workspace/config/settings.local.json
+workspace/.seed-manifest.json
+workspace/.seed-backups/
+**/YAOGUO.local.md
+**/.yaoguo/rules.local/
+*.log
+# LibreOffice / NSS 在无头文档验证时可能把运行时模块配置写到 cwd。
+pkcs11.txt
+.DS_Store
+.claude/
+coverage/

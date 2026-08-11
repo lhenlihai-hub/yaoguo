@@ -1,0 +1,63 @@
+{
+  "id": "skill://pdf@1",
+  "kind": "skill",
+  "trust": "bundled",
+  "version": 1,
+  "title": "PDF 文档",
+  "format": "pdf",
+  "entry": {
+    "create": {
+      "description": "把已有 Word .docx 渲染为 PDF。",
+      "runtime": "node",
+      "script": "scripts/create.js",
+      "sideEffects": "workspace_write",
+      "idempotent": true,
+      "timeoutMs": 120000,
+      "pathParams": { "read": ["inputPath"], "write": ["outputPath"] },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "inputPath": { "type": "string", "minLength": 1 },
+          "outputPath": { "type": "string", "minLength": 1 },
+          "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 120000 }
+        },
+        "required": ["inputPath", "outputPath"],
+        "additionalProperties": false
+      }
+    },
+    "validate": {
+      "description": "检查 PDF 文件头和非空状态。",
+      "runtime": "node",
+      "script": "scripts/validate.js",
+      "sideEffects": "none",
+      "idempotent": true,
+      "timeoutMs": 30000,
+      "pathParams": { "read": ["inputPath"], "write": [] },
+      "inputSchema": {
+        "type": "object",
+        "properties": { "inputPath": { "type": "string", "minLength": 1 } },
+        "required": ["inputPath"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "dependencies": [
+    {
+      "id": "libreoffice",
+      "kind": "binary",
+      "required": true,
+      "for": ["create"],
+      "purpose": "docx → PDF 渲染",
+      "missingHint": "未安装 LibreOffice：宿主会优先使用 Chromium，仍失败时交付 Word 文件。"
+    }
+  ],
+  "triggers": {
+    "intents": ["导出 pdf", "生成 pdf", "校验 pdf", "转成 pdf", "export pdf"],
+    "extensions": [".pdf"],
+    "outputFormats": ["pdf"]
+  },
+  "outputContract": { "create": { "mimeType": "application/pdf", "extension": "pdf" } },
+  "safety": { "networkAccess": false, "fileWrite": "scoped", "requiresUserConfirm": false },
+  "exposure": { "mode": "orchestrated", "tool": "generate_document" },
+  "instructionsRef": "SKILL.md"
+}

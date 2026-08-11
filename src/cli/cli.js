@@ -1,0 +1,422 @@
+#!/usr/bin/env node
+"use strict";
+
+const crypto = require("node:crypto");
+const fsp = require("node:fs/promises");
+const os = require("node:os");
+const path = require("node:path");
+const readline = require("node:readline/promises");
+const { createApplicationServices } = require("../application/appServices");
+
+const PACKAGE_ROOT = path.resolve(__dirname, "../..");
+const PACKAGE_JSON = require(path.join(PACKAGE_ROOT, "package.json"));
+
+function parseArgs(argv = []) {
+  const options = {
+    prompt: "",
+    workspace: "",
+    dataDir: "",
+    projectId: "",
+    taskId: "",
+    newSession: false,
+    autoApprove: false,
+    json: false,
+    verbose: false,
+    quiet: false,
+    help: false,
+    version: false
+  };
+  const positional = [];
+  const valueFlags = new Map([
+    ["--prompt", "prompt"],
+    ["--workspace", "workspace"],
+    ["--data-dir", "dataDir"],
+    ["--project", "projectId"],
+    ["--task", "taskId"]
+  ]);
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = `${argv[index] || ""}`;
+    if (argument === "--") {
+      positional.push(...argv.slice(index + 1));
+      break;
+    }
+    const inline = argument.match(/^(--[^=]+)=(.*)$/s);
+    const flag = inline?.[1] || argument;
+    if (valueFlags.has(flag)) {
+      const value = inline ? inline[2] : argv[++index];
+      if (value === undefined || `${value}` === "") throw new Error(`${flag} 缺少参数。`);
+      options[valueFlags.get(flag)] = `${value}`;
+      continue;
+    }
+    if (["--new", "-n"].includes(flag)) options.newSession = true;
+    else if (["--yes", "-y"].includes(flag)) options.autoApprove = true;
+    else if (flag === "--json") options.json = true;
+    else if (["--verbose", "-v"].includes(flag)) options.verbose = true;
+    else if (["--quiet", "-q"].includes(flag)) options.quiet = true;
+    else if (["--help", "-h"].includes(flag)) options.help = true;
+    else if (["--version", "-V"].includes(flag)) options.version = true;
+    else if (flag.startsWith("-")) throw new Error(`未知参数：${flag}`);
+    else positional.push(argument);
+  }
+  if (!options.prompt && positional.length) options.prompt = positional.join(" ").trim();
+  if (options.verbose && options.quiet) throw new Error("--verbose 与 --quiet 不能同时使用。");
+  return options;
+}
+
+function resolveDataRoot(options = {}, env = process.env, homeDirectory = os.homedir()) {
+  const configured = `${options.dataDir || env.YAOGUO_HOME || ""}`.trim();
+  return path.resolve(configured || path.join(homeDirectory, ".yaoguo", "runtime"));
+}
+
+async function readStream(stream) {
+  let content = "";
+  for await (const chunk of stream) content += chunk.toString("utf8");
+  return content.trim();
+}
+
+function helpText() {
+  return [
+    "腰果 — 基于 Pi、仅支持 DeepSeek 的终端 Agent",
+    "",
+    "用法：",
+    "  yaoguo [选项] [任务]",
+    "  echo '任务' | yaoguo [选项]",
+    "  yaoguo                 进入交互会话",
+    "",
+    "选项：",
+    "  --workspace <目录>     Agent 工作空间，默认当前目录",
+    "  --data-dir <目录>      腰果运行数据目录，默认 ~/.yaoguo/runtime",
+    "  --project <id>         使用或创建指定项目",
+    "  --task <id>            使用或创建指定会话",
+    "  -n, --new              在当前工作空间创建新会话",
+    "  -y, --yes              本次进程自动授权需确认的工具操作",
+    "  --json                  单次任务输出 JSON，不输出 token 流",
+    "  -v, --verbose           在 stderr 显示 Agent 活动",
+    "  -q, --quiet             隐藏活动与本轮 token 统计",
+    "  -h, --help              显示帮助",
+    "  -V, --version           显示版本",
+    "",
+    "交互命令：",
+    "  /usage                  查看当前会话累计 token 与缓存命中",
+    "  /tokens                 /usage 的别名",
+    "  /exit                   退出交互会话",
+    "",
+    "模型密钥只从 DEEPSEEK_API_KEY 或本机配置读取，不接受命令行明文参数。"
+  ].join("\n");
+}
+
+function createTerminal(options = {}, streams = {}) {
+  const input = streams.input || process.stdin;
+  const output = streams.output || process.stdout;
+  const error = streams.error || process.stderr;
+  const interactive = Boolean(input.isTTY && error.isTTY);
+  const rl = readline.createInterface({
+    input,
+    output: error,
+    terminal: interactive,
+    historySize: 100,
+    removeHistoryDuplicates: true
+  });
+  const terminal = {
+    input, output, error, interactive, rl, options,
+    activeController: null,
+    exitRequested: false
+  };
+  rl.on("SIGINT", () => {
+    terminal.exitRequested = true;
+    if (terminal.activeController && !terminal.activeController.signal.aborted) {
+      terminal.error.write("\n正在停止当前任务…\n");
+      terminal.activeController.abort(new Error("用户中断终端任务"));
+    }
+    terminal.rl.close();
+  });
+  return terminal;
+}
+
+function createApprovalHandler(terminal) {
+  return async (request = {}) => {
+    if (terminal.options.autoApprove) return { decision: "allow_session" };
+    if (!terminal.interactive) return { decision: "deny" };
+    const allowed = new Set(request.allowedDecisions || ["deny", "allow_once"]);
+    terminal.error.write([
+      "\n需要授权",
+      request.summary ? `\n${request.summary}` : "",
+      request.target ? `\n目标：${request.target}` : "",
+      request.boundary ? `\n边界：${request.boundary}` : "",
+      "\n"
+    ].join(""));
+    const choices = [
+      ["y", "allow_once", "允许一次"],
+      ["s", "allow_session", "本次进程允许"],
+      ["a", "allow_always", "以后允许此项"],
+      ["e", "allow_effect", "以后允许此类型"],
+      ["n", "deny", "拒绝"]
+    ].filter(([, decision]) => allowed.has(decision));
+    const label = choices.map(([key, , text]) => `${key}=${text}`).join("，");
+    while (true) {
+      const answer = (await terminal.rl.question(`选择 [${label}]：`)).trim().toLowerCase();
+      const selected = choices.find(([key]) => answer === key);
+      if (selected) return { decision: selected[1] };
+    }
+  };
+}
+
+async function ensureModelAvailable(settingsService, env = process.env) {
+  const settings = await settingsService.get();
+  const config = settings.deepseek || {};
+  const envName = `${config.apiKeyEnv || "DEEPSEEK_API_KEY"}`;
+  if (!config.apiKey && !env[envName]) {
+    throw new Error(`缺少 DeepSeek API Key。请先设置环境变量 ${envName}。`);
+  }
+  if (!config.enabled) {
+    await settingsService.mutate((next) => {
+      next.deepseek = { ...(next.deepseek || {}), enabled: true };
+    });
+  }
+}
+
+function workspaceTaskId(workspacePath) {
+  const digest = crypto.createHash("sha256").update(workspacePath, "utf8").digest("hex").slice(0, 12);
+  return `cwd-${digest}`;
+}
+
+async function resolveSession(services, options = {}) {
+  const requestedWorkspace = path.resolve(options.workspace || process.cwd());
+  const stat = await fsp.stat(requestedWorkspace).catch(() => null);
+  if (!stat?.isDirectory()) throw new Error(`工作空间不是有效目录：${requestedWorkspace}`);
+  const workspacePath = await fsp.realpath(requestedWorkspace);
+  const projectId = options.projectId || "terminal";
+  let project = await services.projectService.getProject(projectId, false);
+  if (!project) {
+    project = await services.projectService.createProject({
+      id: projectId,
+      name: projectId === "terminal" ? "终端工作区" : projectId
+    });
+  }
+  const taskId = options.taskId || (options.newSession
+    ? `session-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`
+    : workspaceTaskId(workspacePath));
+  let task = await services.projectService.getTask(project.id, taskId, false);
+  if (!task) {
+    task = await services.projectService.createTask(project.id, {
+      id: taskId,
+      title: options.newSession ? `${path.basename(workspacePath)} · 新会话` : path.basename(workspacePath)
+    });
+  }
+  if (task.workspacePath) {
+    const resolved = await services.projectService.resolveTaskWorkspace(project.id, task.id);
+    if (resolved.workspacePath !== workspacePath) {
+      throw new Error(`会话 ${task.id} 已绑定另一工作空间：${resolved.workspacePath}`);
+    }
+    task = resolved.task;
+  } else {
+    task = await services.projectService.bindTaskWorkspace(project.id, task.id, workspacePath);
+  }
+  return { project, task, workspacePath };
+}
+
+function activityReporter(terminal) {
+  let previous = "";
+  return (activity = {}) => {
+    if (terminal.options.json || terminal.options.quiet) return;
+    if (!terminal.interactive && !terminal.options.verbose) return;
+    const label = `${activity.label || activity.status || ""}`.trim();
+    if (!label || label === previous) return;
+    if (!terminal.options.verbose && activity.kind === "tool" && activity.status !== "running") {
+      previous = "";
+      return;
+    }
+    previous = label;
+    const icon = activity.status === "completed"
+      ? "✓"
+      : (activity.status === "blocked" ? "!" : (activity.kind === "tool" ? "↳" : "◆"));
+    terminal.error.write(`${icon} ${label}\n`);
+  };
+}
+
+function formatTokenCount(value) {
+  return Math.max(0, Number(value) || 0).toLocaleString("en-US");
+}
+
+function formatDuration(durationMs) {
+  const seconds = Math.max(0, Number(durationMs) || 0) / 1000;
+  return seconds < 60 ? `${seconds.toFixed(1)}s` : `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+}
+
+function formatUsage(usage = {}, { label = "本轮", durationMs = null } = {}) {
+  const cacheHitTokens = Math.max(0, Number(usage.cacheHitTokens) || 0);
+  const cacheMissTokens = Math.max(0, Number(usage.cacheMissTokens) || 0);
+  const cachePromptTokens = cacheHitTokens + cacheMissTokens;
+  const cacheRate = cachePromptTokens > 0
+    ? `${Math.round((cacheHitTokens / cachePromptTokens) * 100)}%`
+    : "—";
+  const rows = [
+    `${label} ${formatTokenCount(usage.modelCalls)} 次模型调用`,
+    `输入 ${formatTokenCount(usage.promptTokens)}`,
+    `输出 ${formatTokenCount(usage.completionTokens)}`
+  ];
+  if (Number(usage.reasoningTokens) > 0) rows.push(`推理 ${formatTokenCount(usage.reasoningTokens)}`);
+  rows.push(`缓存命中 ${cacheRate}（${formatTokenCount(cacheHitTokens)}/${formatTokenCount(cachePromptTokens)}）`);
+  if (durationMs !== null) rows.push(formatDuration(durationMs));
+  return rows.join(" · ");
+}
+
+function isUsageCommand(message = "") {
+  return ["/usage", "/tokens"].includes(`${message || ""}`.trim().toLowerCase());
+}
+
+async function sessionUsage(services, session) {
+  const ledger = services?.platformKernel?.tokenLedger;
+  if (typeof ledger?.summarizeUsage !== "function") throw new Error("Token 统计服务不可用。");
+  return ledger.summarizeUsage({ projectId: session.project.id, taskId: session.task.id });
+}
+
+async function printSessionUsage(services, terminal, session) {
+  const usage = await sessionUsage(services, session);
+  if (terminal.options.json) terminal.output.write(`${JSON.stringify({ usage }, null, 2)}\n`);
+  else terminal.output.write(`${formatUsage(usage, { label: "会话累计" })}\n`);
+  return usage;
+}
+
+async function runTurn(services, terminal, session, message) {
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  terminal.activeController = controller;
+  let streamed = false;
+  let result;
+  try {
+    result = await services.workflowEngine.submitAgentInput({
+      message,
+      projectId: session.project.id,
+      taskId: session.task.id,
+      source: "terminal",
+      turnId: crypto.randomUUID()
+    }, {
+      signal: controller.signal,
+      onToken: terminal.options.json ? null : (delta) => {
+        if (!delta) return;
+        streamed = true;
+        terminal.output.write(delta);
+      }
+    });
+  } finally {
+    if (terminal.activeController === controller) terminal.activeController = null;
+  }
+  if (terminal.options.json) {
+    terminal.output.write(`${JSON.stringify({
+      projectId: session.project.id,
+      taskId: session.task.id,
+      workspacePath: session.workspacePath,
+      ...result
+    }, null, 2)}\n`);
+  } else {
+    if (streamed) terminal.output.write("\n");
+    if (!streamed || result.blocked || result.cancelled) terminal.output.write(`${result.reply || ""}\n`);
+    for (const artifact of result.artifacts || []) {
+      if (artifact?.absolute) terminal.error.write(`成品：${artifact.absolute}\n`);
+    }
+    if (!terminal.options.quiet && result.usage) {
+      terminal.error.write(`${formatUsage(result.usage, { durationMs: Date.now() - startedAt })}\n`);
+    }
+  }
+  return result;
+}
+
+async function stopServices(services) {
+  services?.taskAgentCoordinator?.abortAll?.("终端进程正在退出");
+  await Promise.allSettled([
+    services?.memoryExtractionService?.stop?.(),
+    services?.autoDreamService?.stop?.(),
+    services?.sessionMemoryService?.stop?.(),
+    services?.schedulerService?.stop?.(),
+    services?.bridgeService?.stop?.()
+  ].filter(Boolean));
+}
+
+async function runInteractive(services, terminal, session) {
+  terminal.error.write(`腰果终端版 ${PACKAGE_JSON.version}\n工作空间：${session.workspacePath}\n输入 /exit 退出。\n\n`);
+  while (true) {
+    let message;
+    try {
+      message = (await terminal.rl.question("你 > ")).trim();
+    } catch {
+      break;
+    }
+    if (!message) continue;
+    if (["/exit", "/quit"].includes(message.toLowerCase())) break;
+    if (isUsageCommand(message)) {
+      await printSessionUsage(services, terminal, session);
+      terminal.error.write("\n");
+      continue;
+    }
+    terminal.error.write("腰果 > ");
+    await runTurn(services, terminal, session, message);
+    if (terminal.exitRequested) break;
+    terminal.error.write("\n");
+  }
+}
+
+async function main(argv = process.argv.slice(2), streams = {}) {
+  const options = parseArgs(argv);
+  if (options.help) {
+    (streams.output || process.stdout).write(`${helpText()}\n`);
+    return 0;
+  }
+  if (options.version) {
+    (streams.output || process.stdout).write(`${PACKAGE_JSON.version}\n`);
+    return 0;
+  }
+  const input = streams.input || process.stdin;
+  if (!options.prompt && !input.isTTY) options.prompt = await readStream(input);
+  const terminal = createTerminal(options, streams);
+  const dataRoot = resolveDataRoot(options);
+  let services = null;
+  try {
+    services = await createApplicationServices({
+      projectRoot: dataRoot,
+      seedWorkspaceRoot: path.join(PACKAGE_ROOT, "workspace"),
+      startBackgroundServices: false,
+      requestToolApproval: createApprovalHandler(terminal),
+      onActivity: activityReporter(terminal)
+    });
+    const session = await resolveSession(services, options);
+    const prompt = options.prompt;
+    if (prompt && isUsageCommand(prompt)) await printSessionUsage(services, terminal, session);
+    else {
+      await ensureModelAvailable(services.settingsService);
+      if (prompt) await runTurn(services, terminal, session, prompt);
+      else if (terminal.interactive) await runInteractive(services, terminal, session);
+      else throw new Error("没有收到任务内容。请通过参数或 stdin 提供任务。");
+    }
+    return 0;
+  } finally {
+    terminal.rl.close();
+    await stopServices(services);
+  }
+}
+
+if (require.main === module) {
+  main().then(
+    (code) => { process.exitCode = code; },
+    (error) => {
+      process.stderr.write(`腰果启动失败：${error?.message || error}\n`);
+      process.exitCode = 1;
+    }
+  );
+}
+
+module.exports = {
+  parseArgs,
+  resolveDataRoot,
+  readStream,
+  helpText,
+  createApprovalHandler,
+  ensureModelAvailable,
+  formatUsage,
+  isUsageCommand,
+  sessionUsage,
+  workspaceTaskId,
+  resolveSession,
+  runTurn,
+  main
+};

@@ -1,0 +1,17 @@
+{
+  "id": "agent-default",
+  "name": "通用 Agent",
+  "description": "一个 Agent 从目标理解、按需取材到完整交付负责到底；不预设题材步骤，不自动追加审核轮次。",
+  "steps": [
+    {
+      "id": "01-agent-delivery",
+      "title": "Agent 完整交付",
+      "kind": "ai",
+      "taskType": "agent",
+      "tools": "agent",
+      "dependsOn": [],
+      "outputFile": "outputs/01-Agent完整交付.md",
+      "instruction": "<task>完成当前用户请求。根据上下文和本轮可用工具自主决定所需行动，最终返回用户要求的结果。</task>"
+    }
+  ]
+}

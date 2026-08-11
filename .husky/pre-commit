@@ -1,0 +1,3 @@
+# 架构 + 复杂度红线 + 类型检查 — 总耗时约 4 秒
+# 测试不在这里跑（pre-push 会跑）；如果想跳过：git commit --no-verify（不建议）
+npm run check && npm run typecheck

@@ -1,0 +1,8 @@
+{
+  "id": "block://agent.naming",
+  "kind": "prompt-block",
+  "version": 1,
+  "title": "首次任务自动命名（项目名 + 任务名）",
+  "domain": "agent",
+  "content": "<task>根据用户第一次消息，为当前项目和任务生成简短中文名称。</task>\n\n<rules>\n<rule>taskTitle: 4-10 个中文字符，概括本次任务的具体目标或对象。</rule>\n<rule>projectName: 2-5 个中文字符，概括项目方向；如果同一项目已有其他任务，留空字符串。</rule>\n<rule>名称只用汉字、英文字母、数字；不用书名号、引号、标点、空格、Markdown。</rule>\n<rule>不用占位词：新项目 / 新任务 / 未命名 / 项目 / 任务。</rule>\n</rules>\n\n<output_format>只返回 JSON 对象：{\"taskTitle\":\"<4-10字>\",\"projectName\":\"<2-5字或空字符串>\"}</output_format>"
+}

@@ -1,0 +1,66 @@
+{
+  "id": "skill://xlsx@1",
+  "kind": "skill",
+  "trust": "bundled",
+  "version": 1,
+  "title": "Excel 工作簿",
+  "format": "xlsx",
+  "entry": {
+    "create": {
+      "description": "把 Markdown 表格转换为 .xlsx 工作簿。",
+      "runtime": "node",
+      "script": "scripts/create.js",
+      "sideEffects": "workspace_write",
+      "idempotent": true,
+      "timeoutMs": 120000,
+      "pathParams": { "read": [], "write": ["outputPath"] },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "object",
+            "properties": { "markdown": { "type": "string", "minLength": 1 } },
+            "required": ["markdown"],
+            "additionalProperties": false
+          },
+          "outputPath": { "type": "string", "minLength": 1 },
+          "options": {
+            "type": "object",
+            "properties": { "title": {} },
+            "additionalProperties": false
+          }
+        },
+        "required": ["source", "outputPath"],
+        "additionalProperties": false
+      }
+    },
+    "validate": {
+      "description": "解析 .xlsx、检查工作表，并拒绝包含内部工具协议的文件。",
+      "runtime": "node",
+      "script": "scripts/validate.js",
+      "sideEffects": "none",
+      "idempotent": true,
+      "timeoutMs": 60000,
+      "pathParams": { "read": ["inputPath"], "write": [] },
+      "inputSchema": {
+        "type": "object",
+        "properties": { "inputPath": { "type": "string", "minLength": 1 } },
+        "required": ["inputPath"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "dependencies": [
+    { "id": "exceljs", "kind": "npm", "version": "^4.4.0", "required": true, "for": ["create", "validate"] },
+    { "id": "marked", "kind": "npm", "version": "^14.0.0", "required": true, "for": ["create"] }
+  ],
+  "triggers": {
+    "intents": ["导出 excel", "生成 excel", "导出表格", "电子表格", "spreadsheet", "export xlsx"],
+    "extensions": [".xlsx", ".xls", ".csv"],
+    "outputFormats": ["xlsx"]
+  },
+  "outputContract": { "create": { "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "extension": "xlsx" } },
+  "safety": { "networkAccess": false, "fileWrite": "scoped", "requiresUserConfirm": false },
+  "exposure": { "mode": "orchestrated", "tool": "generate_document" },
+  "instructionsRef": "SKILL.md"
+}

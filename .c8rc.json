@@ -1,0 +1,22 @@
+{
+  "all": true,
+  "include": [
+    "src/platform/**/*.js",
+    "src/application/**/*.js",
+    "src/domain/**/*.js"
+  ],
+  "exclude": [
+    "src/legacy/**",
+    "src/renderer/**",
+    "src/main/**",
+    "**/*.test.*",
+    "tests/**",
+    "scripts/**",
+    "node_modules/**",
+    "dist/**",
+    "build/**"
+  ],
+  "exclude-after-remap": true,
+  "skip-full": false,
+  "check-coverage": false
+}

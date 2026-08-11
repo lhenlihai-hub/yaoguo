@@ -1,0 +1,52 @@
+name: Bug 报告
+description: 报告可复现的功能或兼容性问题
+title: "[Bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: input
+    id: command
+    attributes:
+      label: 运行命令
+      placeholder: npm run cli / yaoguo --json
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本或 commit
+      placeholder: v0.1.0 / commit SHA
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 环境
+      placeholder: macOS 15 arm64 / Ubuntu 24.04 x64 / Node 22.19.0
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请提供最小、可重复执行的步骤，不要粘贴密钥或私有数据。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+    validations:
+      required: true
+  - type: checkboxes
+    id: security
+    attributes:
+      label: 安全确认
+      options:
+        - label: 这不是需要私下报告的安全漏洞，也不包含 API Key、个人对话或私有项目文件。
+          required: true
