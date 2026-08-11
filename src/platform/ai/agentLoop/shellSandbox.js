@@ -176,10 +176,10 @@ class ShellSandbox {
     if (this.commandActive) throw new Error("bash 命令必须串行执行。");
     this.commandActive = true;
     const monitorStop = new AbortController();
+    const signal = options.abortSignal || options.signal;
     let observedStatus = null;
     try {
       await this.prepareCommandControl();
-      const signal = options.abortSignal || options.signal;
       const commandToken = randomUUID();
       const sandboxedCommand = await this.wrap(command, signal);
       const executionOptions = {
@@ -221,6 +221,9 @@ class ShellSandbox {
       const result = await baseResultPromise;
       if (result?.ok && result.value) result.value.exitCode = observedStatus;
       return result;
+    } catch (error) {
+      if (signal?.aborted) throw shellAbortError(error);
+      throw error;
     } finally {
       monitorStop.abort();
       let reapError = null;
@@ -350,6 +353,13 @@ class ShellSandbox {
     await Promise.all(targets.map((target) => fsp.rm(target, { recursive: true, force: true })));
     if (reapError) throw reapError;
   }
+}
+
+/** @param {unknown} cause */
+function shellAbortError(cause) {
+  const error = new Error("系统命令执行已取消。", { cause });
+  error.name = "AbortError";
+  return error;
 }
 
 function systemRuntimeReadRoots(options = {}) {

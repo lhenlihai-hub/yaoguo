@@ -1048,6 +1048,51 @@ test("macOS 系统命令只放行运行时代码目录，不重新开放包管�
   }
 });
 
+test("bash 取消时将底层 kill EPERM 归一化为 AbortError", async () => {
+  const workDir = await mkdtemp(path.join(tmpdir(), "yaoguo-shell-abort-error-"));
+  const sandbox = new ShellSandbox({
+    cwd: workDir,
+    readRoots: [workDir],
+    writeRoots: [workDir]
+  });
+  try {
+    sandbox.runtime = {
+      SandboxManager: {
+        wrapWithSandbox(command) { return command; }
+      }
+    };
+    await sandbox.initializeProcessSupervisor();
+    const controller = new AbortController();
+    const base = {
+      exec(_command, options) {
+        return new Promise((_resolve, reject) => {
+          const fail = () => {
+            const error = new Error("kill EPERM");
+            error.code = "EPERM";
+            reject(error);
+          };
+          if (options.abortSignal.aborted) fail();
+          else options.abortSignal.addEventListener("abort", fail, { once: true });
+        });
+      }
+    };
+    const execution = sandbox.execute(base, "ignored", {
+      cwd: workDir,
+      abortSignal: controller.signal
+    });
+    controller.abort(new Error("permission changed"));
+    await assert.rejects(execution, (error) => {
+      assert.equal(error.name, "AbortError");
+      assert.match(error.message, /已取消/);
+      assert.equal(error.cause?.code, "EPERM");
+      return true;
+    });
+  } finally {
+    await sandbox.cleanup();
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
 test("bash 正常返回时宿主回收同进程组后台任务", async () => {
   const workDir = await mkdtemp(path.join(tmpdir(), "yaoguo-shell-process-group-"));
   let sandbox;
