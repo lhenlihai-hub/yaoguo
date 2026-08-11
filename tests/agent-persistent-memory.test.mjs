@@ -130,7 +130,7 @@ test("Agent 记忆快照可序列化为 JSON，并安全迁移到另一个 Agent
 
 test("append-only 模式只追加日期日志，memory.md 在前台保持只读", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-memory-journal-"));
-  let now = new Date("2026-08-09T23:59:00+08:00");
+  let now = new Date(2026, 7, 9, 23, 59, 0);
   const service = new MemoryStore({
     workspaceRoot: root,
     clock: () => now,
@@ -158,7 +158,7 @@ test("append-only 模式只追加日期日志，memory.md 在前台保持只读"
     const log = await readFile(path.join(info.memoryDirectory, "logs", "2026-08-09.md"), "utf8");
     assert.match(log, /yaoguo:memory:[a-f0-9]{64}/);
     assert.match(log, /用户确认先给证据/);
-    now = new Date("2026-08-10T00:01:00+08:00");
+    now = new Date(2026, 7, 10, 0, 1, 0);
     const next = await store.append(memory({
       topic: "concise-review",
       name: "简洁评审",
@@ -292,6 +292,6 @@ test("前台 append-only 写入只记录信号，模型整合留给夜间入口"
 });
 
 test("夜间入口按本地 02:00 计算稳定唤醒边界", () => {
-  assert.equal(nextNightlyDelay(new Date("2026-08-09T01:00:00+08:00"), 2), 60 * 60 * 1000);
-  assert.equal(nextNightlyDelay(new Date("2026-08-09T03:00:00+08:00"), 2), 23 * 60 * 60 * 1000);
+  assert.equal(nextNightlyDelay(new Date(2026, 7, 9, 1, 0, 0), 2), 60 * 60 * 1000);
+  assert.equal(nextNightlyDelay(new Date(2026, 7, 9, 3, 0, 0), 2), 23 * 60 * 60 * 1000);
 });
