@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -16,6 +16,7 @@ const {
   isUsageCommand,
   sessionUsage,
   workspaceTaskId,
+  resolveWorkspaceSelection,
   resolveSession
 } = require("../src/cli/cli.js");
 
@@ -141,5 +142,32 @@ test("CLI 默认按 canonical 工作空间复用稳定会话", async () => {
     assert.equal(tasks.size, 1);
   } finally {
     await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("CLI 从主目录启动时使用独立默认工作空间，但显式危险目录仍被拒绝", async () => {
+  const testRoot = await mkdtemp(path.join(tmpdir(), "yaoguo-cli-home-"));
+  const homeDirectory = path.join(testRoot, "home");
+  const hostWorkspace = path.join(homeDirectory, ".yaoguo", "runtime", "workspace");
+  const projectService = { paths: { workspace: hostWorkspace } };
+  try {
+    await mkdir(hostWorkspace, { recursive: true });
+    const selection = await resolveWorkspaceSelection(
+      { projectService },
+      {},
+      { currentDirectory: homeDirectory, homeDirectory }
+    );
+    assert.equal(selection.workspacePath, await realpath(path.join(homeDirectory, "Yaoguo Workspace")));
+    assert.equal(selection.autoSelected, true);
+    await assert.rejects(
+      resolveWorkspaceSelection(
+        { projectService },
+        { workspace: homeDirectory },
+        { currentDirectory: homeDirectory, homeDirectory }
+      ),
+      /--workspace 选择独立目录/
+    );
+  } finally {
+    await rm(testRoot, { recursive: true, force: true });
   }
 });

@@ -151,7 +151,7 @@ yaoguo "检查当前目录中的测试失败"
 
 腰果只支持 DeepSeek V4 Pro / Flash。模型请求统一经过 `ModelGateway`，不会根据任务类型切换到其他提供商，也没有备用模型或第二套 Agent 引擎。
 
-API Key 只从 `DEEPSEEK_API_KEY` 或本地配置读取，不接受命令行明文密钥。运行数据默认保存在 `~/.yaoguo/runtime`，当前目录只作为 Agent 工作空间。
+API Key 只从 `DEEPSEEK_API_KEY` 或本地配置读取，不接受命令行明文密钥。运行数据默认保存在 `~/.yaoguo/runtime`，当前目录只作为 Agent 工作空间；直接从用户主目录启动时会改用独立的 `~/Yaoguo Workspace`。
 
 ## 开发与贡献
 

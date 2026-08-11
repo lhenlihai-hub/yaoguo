@@ -7,10 +7,12 @@ const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline/promises");
 const { createApplicationServices } = require("../application/appServices");
+const { isPathInside } = require("../platform/shared/pathSafety");
 const { runUninstall } = require("./uninstall");
 
 const PACKAGE_ROOT = path.resolve(__dirname, "../..");
 const PACKAGE_JSON = require(path.join(PACKAGE_ROOT, "package.json"));
+const DEFAULT_HOME_WORKSPACE = "Yaoguo Workspace";
 
 function parseArgs(argv = []) {
   const options = {
@@ -86,7 +88,7 @@ function helpText() {
     "  yaoguo uninstall       卸载程序和运行数据，保留已发布成品",
     "",
     "选项：",
-    "  --workspace <目录>     Agent 工作空间，默认当前目录",
+    "  --workspace <目录>     Agent 工作空间，默认当前目录；主目录启动时使用 ~/Yaoguo Workspace",
     "  --data-dir <目录>      腰果运行数据目录，默认 ~/.yaoguo/runtime",
     "  --project <id>         使用或创建指定项目",
     "  --task <id>            使用或创建指定会话",
@@ -182,11 +184,40 @@ function workspaceTaskId(workspacePath) {
   return `cwd-${digest}`;
 }
 
-async function resolveSession(services, options = {}) {
-  const requestedWorkspace = path.resolve(options.workspace || process.cwd());
+function pathsOverlap(firstPath, secondPath) {
+  return isPathInside(firstPath, secondPath) || isPathInside(secondPath, firstPath);
+}
+
+async function resolveWorkspaceSelection(services, options = {}, runtime = {}) {
+  const explicitWorkspace = `${options.workspace || ""}`.trim();
+  const currentDirectory = runtime.currentDirectory || process.cwd();
+  const homeDirectory = runtime.homeDirectory || os.homedir();
+  const requestedWorkspace = path.resolve(explicitWorkspace || currentDirectory);
   const stat = await fsp.stat(requestedWorkspace).catch(() => null);
   if (!stat?.isDirectory()) throw new Error(`工作空间不是有效目录：${requestedWorkspace}`);
   const workspacePath = await fsp.realpath(requestedWorkspace);
+  const hostWorkspace = `${services?.projectService?.paths?.workspace || ""}`.trim();
+  if (!hostWorkspace) return { workspacePath, autoSelected: false };
+  const canonicalHostWorkspace = await fsp.realpath(hostWorkspace)
+    .catch(() => path.resolve(hostWorkspace));
+  if (!pathsOverlap(canonicalHostWorkspace, workspacePath)) {
+    return { workspacePath, autoSelected: false };
+  }
+  if (explicitWorkspace) {
+    throw new Error("不能把腰果的宿主数据目录或其上级目录设为 Agent 工作空间；请通过 --workspace 选择独立目录。");
+  }
+  const fallbackPath = path.resolve(homeDirectory, DEFAULT_HOME_WORKSPACE);
+  await fsp.mkdir(fallbackPath, { recursive: true });
+  const canonicalFallback = await fsp.realpath(fallbackPath);
+  if (pathsOverlap(canonicalHostWorkspace, canonicalFallback)) {
+    throw new Error("默认工作空间与腰果宿主数据目录冲突；请通过 --workspace 选择独立目录。");
+  }
+  return { workspacePath: canonicalFallback, autoSelected: true };
+}
+
+async function resolveSession(services, options = {}, runtime = {}) {
+  const workspaceSelection = await resolveWorkspaceSelection(services, options, runtime);
+  const { workspacePath } = workspaceSelection;
   const projectId = options.projectId || "terminal";
   let project = await services.projectService.getProject(projectId, false);
   if (!project) {
@@ -214,7 +245,7 @@ async function resolveSession(services, options = {}) {
   } else {
     task = await services.projectService.bindTaskWorkspace(project.id, task.id, workspacePath);
   }
-  return { project, task, workspacePath };
+  return { project, task, ...workspaceSelection };
 }
 
 function activityReporter(terminal) {
@@ -421,6 +452,7 @@ module.exports = {
   isUsageCommand,
   sessionUsage,
   workspaceTaskId,
+  resolveWorkspaceSelection,
   resolveSession,
   runTurn,
   main

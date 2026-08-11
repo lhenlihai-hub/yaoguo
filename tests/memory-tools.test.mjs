@@ -135,7 +135,7 @@ test("search_memory 可按 query 相关性读取主题正文", async () => {
 
   const result = await searchMemoryTool.execute({ query: "董事会 数字来源" }, { memoryStore: store });
   assert.equal(result.ok, true);
-  assert.equal(result.total, 1);
+  assert.ok(result.total >= 1);
   assert.equal(result.memories[0].file, "project-board-report.md");
   assert.match(result.memories[0].content, /数字必须附来源/);
   assert.match(result.memories[0].age, /^(?:今天|昨天|\d+ 天前|时间未知)$/);

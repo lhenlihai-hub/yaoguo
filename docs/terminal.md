@@ -55,7 +55,7 @@ printf '%s\n' '总结 README.md' | npm run cli
 ## 参数
 
 ```text
---workspace <目录>  Agent 工作空间，默认当前目录
+--workspace <目录>  Agent 工作空间，默认当前目录；主目录启动时使用 ~/Yaoguo Workspace
 --data-dir <目录>   运行数据目录，默认 ~/.yaoguo/runtime
 --project <id>      使用或创建指定项目
 --task <id>         使用或创建指定会话
@@ -68,7 +68,7 @@ printf '%s\n' '总结 README.md' | npm run cli
 -V, --version        显示版本
 ```
 
-`YAOGUO_HOME` 可设置默认运行数据目录，显式 `--data-dir` 的优先级更高。默认会话按工作空间的 canonical path 生成稳定 ID，因此回到同一目录会继续原会话；`--new` 会创建独立会话。
+`YAOGUO_HOME` 可设置默认运行数据目录，显式 `--data-dir` 的优先级更高。直接在用户主目录运行 `腰果` 时，CLI 会创建并使用独立的 `~/Yaoguo Workspace`，避免把包含腰果内部数据的整个主目录交给 Agent；显式指定与内部数据重叠的 `--workspace` 仍会被拒绝。默认会话按工作空间的 canonical path 生成稳定 ID，因此回到同一目录会继续原会话；`--new` 会创建独立会话。
 
 ## Agent 状态与 token
 
