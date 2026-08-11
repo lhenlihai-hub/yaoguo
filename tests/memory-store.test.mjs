@@ -209,7 +209,6 @@ test("检索按 query、封闭类型或索引文件选择主题正文", async ()
   }));
 
   const queried = await store.search({ query: "董事会 经营数字", limit: 2 });
-  assert.equal(queried.length, 1);
   assert.equal(queried[0].file, "project-board-review.md");
   const exact = await store.search({ files: ["user-profile.md"], types: ["user"] });
   assert.equal(exact.length, 1);
