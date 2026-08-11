@@ -16,11 +16,13 @@ const {
   modelConfiguration,
   runModelMenu,
   formatUsage,
+  formatTuiUsage,
   isUsageCommand,
   sessionUsage,
   workspaceTaskId,
   resolveWorkspaceSelection,
   resolveSession,
+  runTurn,
   runInteractive
 } = require("../src/cli/cli.js");
 
@@ -64,6 +66,7 @@ test("CLI 格式化本轮 token、推理与缓存命中，并识别内置统计�
   assert.equal(isUsageCommand(" /usage "), true);
   assert.equal(isUsageCommand("/tokens"), true);
   assert.equal(isUsageCommand("usage"), false);
+  assert.equal(formatTuiUsage(usage), "↑12k ↓678 C75%");
   assert.deepEqual(await sessionUsage({
     platformKernel: {
       tokenLedger: {
@@ -82,12 +85,36 @@ test("CLI 数据目录优先使用参数，其次环境变量，最后使用用�
   assert.equal(resolveDataRoot({}, { YAOGUO_HOME: "/tmp/env" }, "/home/test"), "/tmp/env");
   assert.equal(resolveDataRoot({}, {}, "/home/test"), "/home/test/.yaoguo/runtime");
   assert.match(helpText(), /DEEPSEEK_API_KEY/);
+  assert.match(helpText(), /\/clear/);
+  assert.match(helpText(), /Shift\+Enter/);
 });
 
 test("CLI 非交互默认拒绝授权，--yes 只授权本次进程", async () => {
   const base = { interactive: false, rl: null, error: { write() {} } };
   assert.deepEqual(await createApprovalHandler({ ...base, options: { autoApprove: false } })({}), { decision: "deny" });
   assert.deepEqual(await createApprovalHandler({ ...base, options: { autoApprove: true } })({}), { decision: "allow_session" });
+});
+
+test("CLI TUI 在界内显示完整授权边界并只返回允许的选择", async () => {
+  let dialog;
+  const handler = createApprovalHandler({
+    interactive: true,
+    options: { autoApprove: false },
+    ui: {
+      async choose(value) {
+        dialog = value;
+        return "allow_once";
+      }
+    }
+  });
+  assert.deepEqual(await handler({
+    summary: "写入文件",
+    target: "/tmp/work/report.md",
+    boundary: "仅当前工作空间",
+    allowedDecisions: ["allow_once", "deny"]
+  }), { decision: "allow_once" });
+  assert.match(dialog.description, /仅当前工作空间/);
+  assert.deepEqual(dialog.items.map((item) => item.value), ["allow_once", "deny"]);
 });
 
 test("CLI 检查模型密钥并只持久化启用状态", async () => {
@@ -146,6 +173,89 @@ test("CLI /model 选择 Flash 并通过隐藏输入保存本机 API Key", async 
   assert.deepEqual(terminal.rl.history, []);
   assert.doesNotMatch(output.join(""), /sk-test-secret/);
   assert.deepEqual(await modelConfiguration(settingsService, {}), configured);
+});
+
+test("CLI TUI /model 通过选择器与密钥弹层完成配置", async () => {
+  let settings = {
+    deepseek: {
+      enabled: false,
+      apiKeyEnv: "DEEPSEEK_API_KEY",
+      model: "deepseek-v4-pro"
+    }
+  };
+  const settingsService = {
+    async get() { return structuredClone(settings); },
+    async mutate(operation) {
+      const next = structuredClone(settings);
+      await operation(next);
+      settings = next;
+      return structuredClone(settings);
+    }
+  };
+  const notices = [];
+  const terminal = {
+    ui: {
+      async choose() { return "flash"; },
+      async promptSecret() { return "sk-tui-secret"; },
+      addSuccess(message) { notices.push(message); },
+      updateModel(model) { notices.push(model.modelLabel); }
+    }
+  };
+  const configured = await runModelMenu(settingsService, terminal, {});
+  assert.equal(configured.model, "deepseek-v4-flash");
+  assert.equal(configured.available, true);
+  assert.equal(settings.deepseek.apiKey, "sk-tui-secret");
+  assert.deepEqual(notices, [
+    "API Key 已保存到本机私有配置。",
+    "Flash",
+    "已选择 Flash。"
+  ]);
+});
+
+test("CLI TUI 将模型 token 流、成品与 usage 交给同一对话界面", async () => {
+  const events = [];
+  const stream = { text: "" };
+  const terminal = {
+    options: { json: false, quiet: false },
+    ui: {
+      beginAssistant() { events.push("begin"); return stream; },
+      appendAssistant(target, delta) { target.text += delta; events.push(`delta:${delta}`); },
+      finishAssistant(target, fallback) { events.push(`finish:${target.text || fallback}`); },
+      addArtifact(absolute) { events.push(`artifact:${absolute}`); },
+      setUsageText(text) { events.push(`usage:${text}`); },
+      cancelAssistant() { events.push("cancel"); }
+    }
+  };
+  const result = await runTurn({
+    workflowEngine: {
+      async submitAgentInput(_payload, options) {
+        options.onToken("已经");
+        options.onToken("完成。");
+        return {
+          reply: "已经完成。",
+          artifacts: [{ absolute: "/tmp/work/report.md" }],
+          usage: {
+            promptTokens: 2000,
+            completionTokens: 120,
+            cacheHitTokens: 1500,
+            cacheMissTokens: 500
+          }
+        };
+      }
+    }
+  }, terminal, {
+    project: { id: "terminal" },
+    task: { id: "task" }
+  }, "完成报告");
+  assert.equal(result.reply, "已经完成。");
+  assert.deepEqual(events, [
+    "begin",
+    "delta:已经",
+    "delta:完成。",
+    "finish:已经完成。",
+    "artifact:/tmp/work/report.md",
+    "usage:↑2.0k ↓120 C75%"
+  ]);
 });
 
 test("CLI 无 API Key 仍可进入交互终端，普通消息只提示 /model", async () => {

@@ -105,7 +105,11 @@ function helpText() {
     "  /model                  选择 Pro / Flash，并设置 DeepSeek API Key",
     "  /usage                  查看当前会话累计 token 与缓存命中",
     "  /tokens                 /usage 的别名",
+    "  /clear                  清空当前屏幕，不删除已保存会话",
+    "  /help                   查看交互命令与快捷键",
     "  /exit                   退出交互会话",
+    "",
+    "终端界面：Enter 发送，Shift+Enter 或 Ctrl+J 换行，Esc 中止当前任务，/ 打开菜单。",
     "",
     "模型密钥只从 DEEPSEEK_API_KEY 或本机配置读取，不接受命令行明文参数。"
   ].join("\n");
@@ -115,31 +119,28 @@ function createTerminal(options = {}, streams = {}) {
   const input = streams.input || process.stdin;
   const output = streams.output || process.stdout;
   const error = streams.error || process.stderr;
-  const interactive = Boolean(input.isTTY && error.isTTY);
+  const interactive = Boolean(input.isTTY && output.isTTY && error.isTTY);
+  const useTui = Boolean(
+    interactive
+    && streams.tui !== false
+    && input === process.stdin
+    && output === process.stdout
+    && error === process.stderr
+    && process.env.TERM !== "dumb"
+  );
   const readlineState = { hidden: false };
-  const readlineOutput = new Writable({
-    write(chunk, encoding, callback) {
-      if (!readlineState.hidden) error.write(chunk, encoding);
-      callback();
-    }
-  });
-  readlineOutput.isTTY = interactive;
-  readlineOutput.columns = Number(error.columns) || 80;
-  readlineOutput.rows = Number(error.rows) || 24;
-  const rl = readline.createInterface({
-    input,
-    output: readlineOutput,
-    terminal: interactive,
-    historySize: 100,
-    removeHistoryDuplicates: true
+  const rl = useTui ? null : createReadlineInterface({
+    input, error, interactive, readlineState
   });
   const terminal = {
     input, output, error, interactive, rl, options,
+    useTui,
+    ui: null,
     readlineState,
     activeController: null,
     exitRequested: false
   };
-  rl.on("SIGINT", () => {
+  rl?.on("SIGINT", () => {
     terminal.exitRequested = true;
     if (terminal.activeController && !terminal.activeController.signal.aborted) {
       terminal.error.write("\n正在停止当前任务…\n");
@@ -150,11 +151,51 @@ function createTerminal(options = {}, streams = {}) {
   return terminal;
 }
 
+function createReadlineInterface({ input, error, interactive, readlineState }) {
+  const readlineOutput = new Writable({
+    write(chunk, encoding, callback) {
+      if (!readlineState.hidden) error.write(chunk, encoding);
+      callback();
+    }
+  });
+  readlineOutput.isTTY = interactive;
+  readlineOutput.columns = Number(error.columns) || 80;
+  readlineOutput.rows = Number(error.rows) || 24;
+  return readline.createInterface({
+    input,
+    output: readlineOutput,
+    terminal: interactive,
+    historySize: 100,
+    removeHistoryDuplicates: true
+  });
+}
+
 function createApprovalHandler(terminal) {
   return async (request = {}) => {
     if (terminal.options.autoApprove) return { decision: "allow_session" };
     if (!terminal.interactive) return { decision: "deny" };
     const allowed = new Set(request.allowedDecisions || ["deny", "allow_once"]);
+    if (terminal.ui) {
+      const choices = [
+        ["allow_once", "允许一次", "仅允许本次工具操作"],
+        ["allow_session", "本次进程允许", "相同目标在当前进程复用"],
+        ["allow_always", "以后允许此项", "持久保存精确授权"],
+        ["allow_effect", "以后允许此类型", "持久保存操作类型授权"],
+        ["deny", "拒绝", "不执行本次操作"]
+      ].filter(([decision]) => allowed.has(decision));
+      const decision = await terminal.ui.choose({
+        title: "需要授权",
+        description: [
+          request.summary,
+          request.target && `目标：${request.target}`,
+          request.boundary && `边界：${request.boundary}`
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        items: choices.map(([value, label, description]) => ({ value, label, description }))
+      });
+      return { decision: decision || "deny" };
+    }
     terminal.error.write([
       "\n需要授权",
       request.summary ? `\n${request.summary}` : "",
@@ -245,6 +286,7 @@ async function saveDeepSeekSettings(settingsService, patch = {}) {
 }
 
 async function runModelMenu(settingsService, terminal, env = process.env) {
+  if (terminal.ui) return runTuiModelMenu(settingsService, terminal, env);
   while (true) {
     const current = await modelConfiguration(settingsService, env);
     terminal.error.write([
@@ -281,6 +323,42 @@ async function runModelMenu(settingsService, terminal, env = process.env) {
     }
     terminal.error.write("请输入 0、1、2 或 3。\n");
   }
+}
+
+async function runTuiModelMenu(settingsService, terminal, env = process.env) {
+  const current = await modelConfiguration(settingsService, env);
+  const choice = await terminal.ui.choose({
+    title: "模型设置",
+    description: `当前：${current.modelLabel} · API Key ${current.keySource}`,
+    selectedIndex: current.model === "deepseek-v4-flash" ? 1 : 0,
+    items: [
+      { value: "pro", label: "Pro", description: "DeepSeek V4 Pro" },
+      { value: "flash", label: "Flash", description: "DeepSeek V4 Flash" },
+      { value: "key", label: "API Key", description: "设置或更新本机密钥" },
+      { value: "cancel", label: "返回", description: "保持当前设置" }
+    ]
+  });
+  if (!choice || choice === "cancel") return current;
+  if (["pro", "flash"].includes(choice)) {
+    await saveDeepSeekSettings(settingsService, {
+      model: choice === "flash" ? "deepseek-v4-flash" : "deepseek-v4-pro"
+    });
+  }
+  let next = await modelConfiguration(settingsService, env);
+  if (choice === "key" || !next.available) {
+    const apiKey = await terminal.ui.promptSecret({
+      title: "DeepSeek API Key",
+      description: "输入已隐藏，不会写入终端历史。Esc 取消。"
+    });
+    if (apiKey) {
+      await saveDeepSeekSettings(settingsService, { apiKey });
+      terminal.ui.addSuccess("API Key 已保存到本机私有配置。");
+    }
+  }
+  next = await modelConfiguration(settingsService, env);
+  terminal.ui.updateModel(next);
+  if (["pro", "flash"].includes(choice)) terminal.ui.addSuccess(`已选择 ${next.modelLabel}。`);
+  return next;
 }
 
 function workspaceTaskId(workspacePath) {
@@ -364,6 +442,10 @@ function activityReporter(terminal) {
       return;
     }
     previous = label;
+    if (terminal.ui) {
+      terminal.ui.setActivity(label, activity.status);
+      return;
+    }
     const icon = activity.status === "completed"
       ? "✓"
       : (activity.status === "blocked" ? "!" : (activity.kind === "tool" ? "↳" : "◆"));
@@ -410,9 +492,28 @@ async function sessionUsage(services, session) {
 
 async function printSessionUsage(services, terminal, session) {
   const usage = await sessionUsage(services, session);
-  if (terminal.options.json) terminal.output.write(`${JSON.stringify({ usage }, null, 2)}\n`);
+  if (terminal.ui) {
+    terminal.ui.addNotice(formatUsage(usage, { label: "会话累计" }));
+    terminal.ui.setUsageText(formatTuiUsage(usage));
+  }
+  else if (terminal.options.json) terminal.output.write(`${JSON.stringify({ usage }, null, 2)}\n`);
   else terminal.output.write(`${formatUsage(usage, { label: "会话累计" })}\n`);
   return usage;
+}
+
+function formatTuiCount(value) {
+  const count = Math.max(0, Number(value) || 0);
+  if (count < 1000) return `${Math.round(count)}`;
+  if (count < 1_000_000) return `${(count / 1000).toFixed(count < 10_000 ? 1 : 0)}k`;
+  return `${(count / 1_000_000).toFixed(1)}m`;
+}
+
+function formatTuiUsage(usage = {}) {
+  const hit = Math.max(0, Number(usage.cacheHitTokens) || 0);
+  const miss = Math.max(0, Number(usage.cacheMissTokens) || 0);
+  const total = hit + miss;
+  const cache = total > 0 ? `${Math.round((hit / total) * 100)}%` : "—";
+  return `↑${formatTuiCount(usage.promptTokens)} ↓${formatTuiCount(usage.completionTokens)} C${cache}`;
 }
 
 async function runTurn(services, terminal, session, message) {
@@ -421,6 +522,7 @@ async function runTurn(services, terminal, session, message) {
   terminal.activeController = controller;
   let streamed = false;
   let result;
+  const tuiStream = terminal.ui?.beginAssistant();
   try {
     result = await services.workflowEngine.submitAgentInput({
       message,
@@ -433,13 +535,22 @@ async function runTurn(services, terminal, session, message) {
       onToken: terminal.options.json ? null : (delta) => {
         if (!delta) return;
         streamed = true;
-        terminal.output.write(delta);
+        if (terminal.ui) terminal.ui.appendAssistant(tuiStream, delta);
+        else terminal.output.write(delta);
       }
     });
+  } catch (error) {
+    terminal.ui?.cancelAssistant(tuiStream);
+    throw error;
   } finally {
     if (terminal.activeController === controller) terminal.activeController = null;
   }
-  if (terminal.options.json) {
+  if (terminal.ui) {
+    terminal.ui.finishAssistant(tuiStream, result.reply || "");
+    for (const artifact of result.artifacts || []) terminal.ui.addArtifact(artifact?.absolute);
+    if (result.usage) terminal.ui.setUsageText(formatTuiUsage(result.usage));
+  }
+  else if (terminal.options.json) {
     terminal.output.write(`${JSON.stringify({
       projectId: session.project.id,
       taskId: session.task.id,
@@ -471,6 +582,11 @@ async function stopServices(services) {
 }
 
 async function runInteractive(services, terminal, session, env = process.env) {
+  if (terminal.useTui) return runInteractiveTui(services, terminal, session, env);
+  return runInteractiveReadline(services, terminal, session, env);
+}
+
+async function runInteractiveReadline(services, terminal, session, env = process.env) {
   const initialModel = await modelConfiguration(services.settingsService, env);
   terminal.error.write([
     `腰果终端版 ${PACKAGE_JSON.version}`,
@@ -509,6 +625,91 @@ async function runInteractive(services, terminal, session, env = process.env) {
     if (terminal.exitRequested) break;
     terminal.error.write("\n");
   }
+}
+
+async function runInteractiveTui(services, terminal, session, env = process.env) {
+  const { createTerminalUi } = require("./tui/terminalUi");
+  const initialModel = await modelConfiguration(services.settingsService, env);
+  const ui = await createTerminalUi({
+    workspacePath: session.workspacePath,
+    modelLabel: initialModel.modelLabel,
+    keyAvailable: initialModel.available,
+    version: PACKAGE_JSON.version
+  });
+  terminal.ui = ui;
+  const history = await loadTerminalHistory(services, session);
+  ui.addConversationHistory(history);
+  if (history.length) ui.addNotice(`已恢复 ${history.length} 条会话记录。`);
+  else ui.addNotice("输入消息开始对话；输入 / 打开命令菜单。");
+  if (!initialModel.available) ui.addNotice("尚未配置 API Key，请通过 /model 完成设置。");
+  ui.start({
+    onSubmit: (message) => handleTuiSubmission(services, terminal, session, message, env),
+    onInterrupt: () => {
+      if (terminal.activeController && !terminal.activeController.signal.aborted) {
+        terminal.activeController.abort(new Error("用户中断终端任务"));
+      }
+    }
+  });
+  try {
+    await ui.waitForExit();
+  } finally {
+    await ui.dispose();
+  }
+}
+
+async function loadTerminalHistory(services, session) {
+  if (typeof services?.workflowEngine?.listAgentMessages !== "function") return [];
+  return services.workflowEngine.listAgentMessages({
+    projectId: session.project.id,
+    taskId: session.task.id,
+    limit: 24
+  }).catch(() => []);
+}
+
+async function handleTuiSubmission(services, terminal, session, message, env = process.env) {
+  const command = `${message || ""}`.trim().toLowerCase();
+  if (["/exit", "/quit"].includes(command)) {
+    terminal.ui.exit();
+    return;
+  }
+  if (isModelCommand(command)) {
+    await runModelMenu(services.settingsService, terminal, env);
+    return;
+  }
+  if (isUsageCommand(command)) {
+    await printSessionUsage(services, terminal, session);
+    return;
+  }
+  if (command === "/clear") {
+    terminal.ui.clearConversation();
+    terminal.ui.addNotice("已清空当前屏幕，已保存的会话与成品未删除。");
+    return;
+  }
+  if (command === "/help") {
+    terminal.ui.addNotice([
+      "/model  模型与 API Key",
+      "/usage  token 与缓存命中",
+      "/clear  清空当前屏幕",
+      "/exit   退出",
+      "Enter 发送 · Shift+Enter 换行 · Esc/Ctrl+C 中止任务"
+    ].join("\n"));
+    return;
+  }
+  terminal.ui.addUserMessage(message);
+  terminal.ui.setBusy(true, "正在检查模型…");
+  try {
+    await ensureModelAvailable(services.settingsService, env);
+    await runTurn(services, terminal, session, message);
+  } catch (error) {
+    if (isTerminalAbort(error)) terminal.ui.addNotice("当前任务已中止。");
+    else terminal.ui.addError(error?.message || error);
+  } finally {
+    terminal.ui.setBusy(false);
+  }
+}
+
+function isTerminalAbort(error) {
+  return error?.name === "AbortError" || /取消|中止|abort/i.test(`${error?.message || error || ""}`);
 }
 
 async function main(argv = process.argv.slice(2), streams = {}) {
@@ -554,7 +755,8 @@ async function main(argv = process.argv.slice(2), streams = {}) {
     }
     return 0;
   } finally {
-    terminal.rl.close();
+    terminal.rl?.close();
+    await terminal.ui?.dispose?.();
     await stopServices(services);
   }
 }
@@ -574,12 +776,14 @@ module.exports = {
   resolveDataRoot,
   readStream,
   helpText,
+  createTerminal,
   createApprovalHandler,
   ensureModelAvailable,
   isModelCommand,
   modelConfiguration,
   runModelMenu,
   formatUsage,
+  formatTuiUsage,
   isUsageCommand,
   sessionUsage,
   workspaceTaskId,

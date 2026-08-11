@@ -4,7 +4,7 @@
 
 - Project: Pi
 - Source: https://github.com/earendil-works/pi
-- Packages: `@earendil-works/pi-agent-core` and its `@earendil-works/pi-ai` dependency
+- Packages: `@earendil-works/pi-agent-core`, `@earendil-works/pi-tui` and their Pi dependencies
 - Locked version: see the exact dependency in `package.json`
 - License: MIT
 - Copyright: Copyright (c) 2025 Mario Zechner
