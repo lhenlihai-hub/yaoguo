@@ -35,7 +35,7 @@ function waitForRender() {
   return new Promise((resolve) => setTimeout(resolve, 40));
 }
 
-test("TUI 提供真实输入框、斜杠菜单、蓝色用户消息与流式回复", async () => {
+test("TUI 提供欢迎页、真实输入框、整合菜单与无底色蓝色用户消息", async () => {
   const terminal = new FakeTerminal();
   const submissions = [];
   const ui = await createTerminalUi({
@@ -55,11 +55,15 @@ test("TUI 提供真实输入框、斜杠菜单、蓝色用户消息与流式回�
   await waitForRender();
 
   const output = terminal.text();
-  assert.match(output, /腰果/);
+  assert.match(output, /欢迎使用腰果/);
+  assert.doesNotMatch(output, /基于 Pi/);
   assert.match(output, /请继续完成项目/);
   assert.match(output, /已经开始处理/);
   assert.match(output, /model/);
-  assert.match(output, /\u001b\[48;2;20;82;138m/);
+  assert.match(output, /resume/);
+  assert.match(output, /permissions/);
+  assert.doesNotMatch(output, /\u001b\[48;2;20;82;138m/);
+  assert.match(output, /\u001b\[38;2;121;187;255m/);
 
   terminal.send("\u001b");
   terminal.send("\u007f");
@@ -68,6 +72,44 @@ test("TUI 提供真实输入框、斜杠菜单、蓝色用户消息与流式回�
   await waitForRender();
   assert.deepEqual(submissions, ["hello"]);
   assert.equal(terminal.title, "腰果");
+  await ui.dispose();
+});
+
+test("TUI 展示真实推理耗时、工作流程与完整路径", async () => {
+  const terminal = new FakeTerminal();
+  const ui = await createTerminalUi({
+    terminal,
+    workspacePath: "/tmp/Yaoguo Workspace",
+    taskTitle: "课件任务",
+    thinkingLabel: "High",
+    permissionLabel: "All agree"
+  });
+  ui.start();
+  const stream = ui.beginAssistant();
+  ui.recordActivity({
+    phase: "search-reference",
+    status: "running",
+    label: "正在搜索参考材料",
+    target: "/tmp/Yaoguo Workspace/references"
+  });
+  ui.appendReasoning(stream, "先核对用户指定的交付路径。");
+  ui.appendReasoning(stream, "", { phase: "complete", durationMs: 1250 });
+  ui.recordActivity({
+    phase: "search-reference",
+    status: "completed",
+    label: "参考材料搜索完成",
+    target: "/tmp/Yaoguo Workspace/references"
+  });
+  ui.appendAssistant(stream, "已完成。");
+  ui.finishAssistant(stream);
+  await waitForRender();
+
+  const output = terminal.text();
+  assert.match(output, /参考材料搜索完成/);
+  assert.match(output, /\/tmp\/Yaoguo Workspace\/references/);
+  assert.match(output, /思考过程 · 1\.3s/);
+  assert.match(output, /先核对用户指定的交付路径/);
+  assert.match(output, /All agree/);
   await ui.dispose();
 });
 

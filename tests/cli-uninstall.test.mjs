@@ -23,6 +23,7 @@ const {
   parseUninstallArgs,
   inferInstallRoot,
   stripManagedProfileBlock,
+  archiveTaskPublishedArtifacts,
   runUninstall
 } = require("../src/cli/uninstall.js");
 
@@ -70,6 +71,40 @@ test("PATH 清理只删除安装器拥有的标记块", () => {
     stripManagedProfileBlock(`export KEEP=1\n${PROFILE_BLOCK_START}\nexport KEEP_TOO=1\n`),
     `export KEEP=1\n${PROFILE_BLOCK_START}\nexport KEEP_TOO=1\n`
   );
+});
+
+test("删除会话前单独归档其已发布成品", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "yaoguo-task-archive-"));
+  const taskDir = path.join(root, "runtime", "workspace", "projects", "terminal", "tasks", "task-1");
+  const finalRoot = path.join(taskDir, "final");
+  const artifactRoot = path.join(root, "artifacts");
+  try {
+    await mkdir(finalRoot, { recursive: true });
+    await writeFile(path.join(finalRoot, "lesson.pptx"), "pptx-content", "utf8");
+    await writeFile(path.join(finalRoot, ".yaoguo-publish-lesson.pptx.json"), "{}", "utf8");
+    const archived = await archiveTaskPublishedArtifacts({
+      taskDir,
+      artifactRoot,
+      projectId: "terminal",
+      taskId: "task-1",
+      clock: () => new Date("2026-08-12T02:03:04.005Z")
+    });
+    assert.equal(archived.count, 1);
+    assert.equal(archived.bytes, 12);
+    assert.equal(
+      await readFile(path.join(
+        artifactRoot,
+        "deleted-2026-08-12T02-03-04-005Z",
+        "terminal",
+        "task-1",
+        "lesson.pptx"
+      ), "utf8"),
+      "pptx-content"
+    );
+    assert.equal(await readFile(path.join(finalRoot, "lesson.pptx"), "utf8"), "pptx-content");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("完全卸载会归档已发布成品，删除程序与数据并保留用户工作区", async () => {

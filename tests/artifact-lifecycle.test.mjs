@@ -83,6 +83,69 @@ test("inspect_artifact 读取真实 PPTX 页数与文字，发布绑定同一快
   }
 });
 
+test("publish_artifact 保留受管快照并把成品交付到用户明确指定的目录", async () => {
+  const ctx = await createContext("yaoguo-artifact-explicit-output-");
+  const outputDir = await mkdtemp(join(tmpdir(), "yaoguo-artifact-user-output-"));
+  try {
+    await mkdir(join(ctx.taskDir, "final"), { recursive: true });
+    await writeFile(join(ctx.taskDir, "final", "report.md"), "# 旧的受管成品\n", "utf8");
+    const candidate = join(ctx.taskDir, ".candidates", "report.md");
+    await writeFile(candidate, "# 新报告\n已按用户要求生成。", "utf8");
+    const inspection = await inspectArtifactTool.execute({ path: candidate }, ctx);
+    ctx.explicitOutputTargets = [{ path: outputDir, kind: "directory" }];
+
+    const published = await publishArtifactTool.execute({
+      path: candidate,
+      inspectionId: inspection.inspectionId,
+      title: "新报告"
+    }, ctx);
+
+    assert.equal(published.absolute, await realpath(join(outputDir, "report.md")));
+    assert.equal(published.managedAbsolute, await realpath(join(ctx.taskDir, "final", "report-v2.md")));
+    assert.match(await readFile(published.absolute, "utf8"), /新报告/);
+    assert.match(await readFile(published.managedAbsolute, "utf8"), /新报告/);
+    await assert.rejects(() => access(candidate));
+  } finally {
+    await rm(ctx.taskDir, { recursive: true, force: true });
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("publish_artifact 即使有显式路径也不写入宿主控制目录或腰果运行数据", async () => {
+  const ctx = await createContext("yaoguo-artifact-protected-output-");
+  const workspace = await mkdtemp(join(tmpdir(), "yaoguo-artifact-protected-workspace-"));
+  try {
+    const gitDir = join(workspace, ".git");
+    await mkdir(gitDir);
+    const candidate = join(ctx.taskDir, ".candidates", "report.md");
+    await writeFile(candidate, "# 安全报告\n", "utf8");
+    const inspection = await inspectArtifactTool.execute({ path: candidate }, ctx);
+    ctx.explicitOutputTargets = [{ path: gitDir, kind: "directory" }];
+    await assert.rejects(
+      () => publishArtifactTool.execute({
+        path: candidate,
+        inspectionId: inspection.inspectionId
+      }, ctx),
+      /宿主控制目录/
+    );
+    assert.equal(await readFile(candidate, "utf8"), "# 安全报告\n");
+
+    ctx.explicitOutputTargets = [{ path: workspace, kind: "directory" }];
+    ctx.explicitOutputDenyRoots = [workspace];
+    await assert.rejects(
+      () => publishArtifactTool.execute({
+        path: candidate,
+        inspectionId: inspection.inspectionId
+      }, ctx),
+      /腰果运行数据/
+    );
+    assert.deepEqual((await readdir(workspace)).sort(), [".git"]);
+  } finally {
+    await rm(ctx.taskDir, { recursive: true, force: true });
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test("文件在检查后变化时旧 inspectionId 不能发布", async () => {
   const ctx = await createContext("yaoguo-artifact-stale-");
   try {

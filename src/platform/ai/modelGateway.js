@@ -313,6 +313,7 @@ class ModelGateway {
   }
 
   async completeOpenAICompatibleDetailed(provider = {}, model = "", messages = [], options = {}) {
+    const requestStartedAt = Date.now();
     if (typeof options.onToken === "function") {
       try {
         return await this.completeOpenAICompatibleStreamDetailed(provider, model, messages, options);
@@ -354,6 +355,10 @@ class ModelGateway {
     const content = message.content || data.output_text || "";
     const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
     const reasoningContent = `${message.reasoning_content || ""}`;
+    if (reasoningContent && typeof options.onReasoning === "function") {
+      options.onReasoning(reasoningContent);
+      options.onReasoning("", { phase: "complete", durationMs: Date.now() - requestStartedAt });
+    }
     const finishReason = `${choice.finish_reason || ""}`;
     this.validateFinishReason(finishReason, toolCalls, options);
     if (toolCalls.length && finishReason !== "length") this.validateToolCalls(toolCalls);
@@ -436,6 +441,7 @@ class ModelGateway {
       let buffer = "";
       let content = "";
       let reasoningContent = "";
+      let reasoningStartedAt = 0;
       let finishReason = "";
       let lastUsage = null;
       const toolCallAcc = new Map();
@@ -477,7 +483,11 @@ class ModelGateway {
               const reasoningDelta = choice.delta?.reasoning_content
                 || choice.message?.reasoning_content
                 || "";
-              if (reasoningDelta) reasoningContent += reasoningDelta;
+              if (reasoningDelta) {
+                if (!reasoningStartedAt) reasoningStartedAt = Date.now();
+                reasoningContent += reasoningDelta;
+                options.onReasoning?.(reasoningDelta);
+              }
               const deltaContent = choice.delta?.content
                 || choice.message?.content
                 || choice.text
@@ -492,6 +502,12 @@ class ModelGateway {
         }
       }
       const toolCalls = Array.from(toolCallAcc.values());
+      if (reasoningStartedAt) {
+        options.onReasoning?.("", {
+          phase: "complete",
+          durationMs: Date.now() - reasoningStartedAt
+        });
+      }
       this.validateFinishReason(finishReason, toolCalls, options);
       if (toolCalls.length && finishReason !== "length") this.validateToolCalls(toolCalls);
       if (!content.trim() && !reasoningContent && !toolCalls.length) throw new Error("模型没有返回可用内容。");

@@ -2,7 +2,7 @@
 
 一个基于 [Pi](https://github.com/earendil-works/pi) 基础能力开发的本地终端 Agent。目前只支持 DeepSeek。
 
-腰果不是把一次回复打印到 stdout 就结束的命令行脚本。直接运行 `腰果`，会进入一个持续工作的终端对话界面：上方保留对话与工具活动，下方是多行输入框和状态栏；输入 `/` 会打开命令菜单。用户消息使用蓝色块显示，Agent 回复以 Markdown 实时流式更新。
+腰果不是把一次回复打印到 stdout 就结束的命令行脚本。直接运行 `腰果`，会进入一个持续工作的终端对话界面：上方保留对话、推理与工具活动，下方是多行输入框和状态栏；输入 `/` 会打开命令菜单。用户消息使用蓝色字体、不铺底色，Agent 回复以 Markdown 实时流式更新。
 
 腰果保留 Pi 简洁的 Agent loop 与工具调用方式，不在 Agent 外再堆叠意图路由、角色流水线或多模型调度。我们主要做了两类高层设计：一套不干预具体写法的总体审美哲学，以及一套让长期协作更连续、可维护的记忆模式。在此之上，项目补齐了宿主权限、工作空间、上下文外置、成品持久化和常用工具集。
 
@@ -22,9 +22,10 @@
 
 - **持续对话**：回到同一工作目录会继续原会话，并恢复最近的对话记录。
 - **底部输入框**：支持长文本、多行编辑、历史输入、粘贴，以及 `@` 文件路径补全。
-- **蓝色消息风格**：用户消息以蓝色背景区分；Agent 回复支持标题、列表、代码块和链接等 Markdown 样式。
-- **斜杠菜单**：输入 `/` 即可浏览命令；`/model` 使用键盘菜单选择 Pro / Flash，并可在隐藏输入框中保存 API Key。
-- **真实运行状态**：模型思考、工具调用、成品路径和需要确认的权限都在当前界面内展示，不会打断对话。
+- **蓝色消息风格**：用户消息只使用蓝色字体；Agent 回复支持标题、列表、代码块和链接等 Markdown 样式。
+- **斜杠菜单**：`/model` 设置 Pro / Flash、思考强度与 API Key；`/resume` 打开或删除历史会话，`/new` 创建会话，`/permissions` 切换 Ask / All agree。
+- **真实运行状态**：界面展示 DeepSeek 返回的推理流与思考耗时，并按顺序记录正在进行和已完成的工具步骤。
+- **完整路径**：工作空间、工具目标和成品位置都显示完整路径。
 - **Token 状态栏**：常驻显示输入、输出与 prompt cache 命中率；`/usage` 可查看当前会话完整累计数据。
 
 常用快捷键：`Enter` 发送，`Shift+Enter` 或 `Ctrl+J` 换行，任务运行时按 `Esc` 或 `Ctrl+C` 中止，空闲时按 `Ctrl+C` 或空输入下的 `Ctrl+D` 退出。一次性任务、stdin 和 `--json` 模式仍然保留，方便脚本和自动化调用。
@@ -88,7 +89,7 @@
 本轮 3 次模型调用 · 输入 12,345 · 输出 678 · 推理 120 · 缓存命中 75%（9,000/12,000） · 12.5s
 ```
 
-`/usage`（或 `/tokens`）可查看当前会话累计输入、输出、推理 token，以及 DeepSeek prompt cache 的命中和未命中数据。这里的“缓存”是模型 API 返回的 prompt cache usage，与腰果的长期记忆不是同一机制。
+`/usage` 可查看当前会话累计输入、输出、推理 token，以及 DeepSeek prompt cache 的命中和未命中数据。这里的“缓存”是模型 API 返回的 prompt cache usage，与腰果的长期记忆不是同一机制。
 
 ## 要求
 
@@ -111,7 +112,7 @@ curl -fsSL https://raw.githubusercontent.com/lhenlihai-hub/yaoguo/main/install.s
 腰果
 ```
 
-首次进入后输入 `/model`，选择 Pro 或 Flash，并通过隐藏输入保存 DeepSeek API Key。也可以继续使用 `export DEEPSEEK_API_KEY="你的密钥"`；单次命令和 stdin 等非交互调用需要提前完成其中一种配置。
+首次进入后输入 `/model`，选择 Pro 或 Flash、设置真实的 Thinking off / High / Max 思考强度，并通过隐藏输入保存 DeepSeek API Key。也可以继续使用 `export DEEPSEEK_API_KEY="你的密钥"`；单次命令和 stdin 等非交互调用需要提前完成其中一种配置。
 
 `yaoguo` 是等价的英文命令。程序、运行数据与记忆统一放在 `~/.yaoguo`，只在 `~/.local/bin` 留下两个命令链接。安装前可先在浏览器中[审阅脚本](install.sh)；已知上游依赖例外见[生产依赖安全记录](docs/DEPENDENCY_SECURITY.md)。
 
@@ -156,13 +157,17 @@ yaoguo "检查当前目录中的测试失败"
 内置终端命令：
 
 ```text
-/model   选择 Pro / Flash，并设置 DeepSeek API Key
-/usage   当前会话累计 token 与缓存命中
-/tokens  /usage 的别名
-/clear   清空当前屏幕，不删除已保存会话
-/help    查看命令与快捷键
-/exit    退出
+/model        模型、思考强度与 DeepSeek API Key
+/usage        token、缓存命中与模型调用
+/resume       打开或删除历史会话
+/new          在当前工作空间新建会话
+/permissions  切换 Ask / All agree 授权模式
+/clear        清空当前屏幕，不删除已保存会话
+/help         查看命令与快捷键
+/quit         退出
 ```
+
+如果希望成品出现在指定目录，可以直接在任务中写绝对路径，例如“请把课件保存到 `/Users/me/Courseware`”。腰果会保留可追踪的受管快照，同时把成品复制到用户明确指定的位置；同名文件会创建新版本，不覆盖原文件。
 
 脚本环境可使用 `--json` 获得结构化结果，或用 `--quiet` 隐藏活动与本轮统计。完整参数与权限行为见 [终端使用说明](docs/terminal.md)。
 

@@ -15,6 +15,8 @@ const {
   isModelCommand,
   modelConfiguration,
   runModelMenu,
+  permissionConfiguration,
+  runPermissionMenu,
   formatUsage,
   formatTuiUsage,
   isUsageCommand,
@@ -22,6 +24,9 @@ const {
   workspaceTaskId,
   resolveWorkspaceSelection,
   resolveSession,
+  createNewSession,
+  runResumeMenu,
+  resolveExplicitOutputTargets,
   runTurn,
   runInteractive
 } = require("../src/cli/cli.js");
@@ -86,6 +91,9 @@ test("CLI 数据目录优先使用参数，其次环境变量，最后使用用�
   assert.equal(resolveDataRoot({}, {}, "/home/test"), "/home/test/.yaoguo/runtime");
   assert.match(helpText(), /DEEPSEEK_API_KEY/);
   assert.match(helpText(), /\/clear/);
+  assert.match(helpText(), /\/resume/);
+  assert.match(helpText(), /All agree/);
+  assert.doesNotMatch(helpText(), /^  \/tokens/m);
   assert.match(helpText(), /Shift\+Enter/);
 });
 
@@ -210,6 +218,189 @@ test("CLI TUI /model 通过选择器与密钥弹层完成配置", async () => {
     "Flash",
     "已选择 Flash。"
   ]);
+});
+
+test("CLI TUI /model 会把思考强度写入真实 DeepSeek 配置", async () => {
+  let settings = {
+    deepseek: {
+      enabled: true,
+      apiKey: "sk-local",
+      apiKeyEnv: "DEEPSEEK_API_KEY",
+      model: "deepseek-v4-pro",
+      thinking: "max"
+    }
+  };
+  const settingsService = {
+    async get() { return structuredClone(settings); },
+    async mutate(operation) {
+      const next = structuredClone(settings);
+      await operation(next);
+      settings = next;
+      return structuredClone(settings);
+    }
+  };
+  const choices = ["thinking", "high"];
+  const updates = [];
+  const configured = await runModelMenu(settingsService, {
+    ui: {
+      async choose() { return choices.shift(); },
+      async promptSecret() { throw new Error("不应询问 API Key"); },
+      addSuccess(message) { updates.push(message); },
+      updateModel(model) { updates.push(model.thinkingLabel); }
+    }
+  }, {});
+  assert.equal(configured.thinking, "high");
+  assert.equal(settings.deepseek.thinking, "high");
+  assert.deepEqual(updates, ["High", "思考强度已设为 High。"]);
+});
+
+test("CLI 授权菜单真实切换 Ask 与 All agree", async () => {
+  let mode = "ask";
+  const settingsService = {
+    async get() { return { permissions: { agent: { mode } } }; },
+    async setAgentPermissionMode(next) { mode = next; }
+  };
+  const updates = [];
+  const terminal = {
+    options: { autoApprove: false },
+    ui: {
+      async choose() { return "allow"; },
+      updatePermissionMode(label) { updates.push(label); },
+      addSuccess(message) { updates.push(message); }
+    }
+  };
+  const configured = await runPermissionMenu(settingsService, terminal);
+  assert.deepEqual(configured, { mode: "allow", label: "All agree" });
+  assert.deepEqual(await permissionConfiguration(settingsService, terminal), configured);
+  assert.equal(mode, "allow");
+  assert.equal(terminal.options.autoApprove, true);
+  assert.deepEqual(updates, ["All agree", "授权模式已切换为 All agree。"]);
+});
+
+test("CLI /resume 可打开历史会话并恢复对话与 usage", async () => {
+  const tasks = [
+    { id: "t1", title: "当前会话", workspacePath: "/tmp/work", updatedAt: "2026-08-12T00:00:00.000Z" },
+    { id: "t2", title: "历史会话", workspacePath: "/tmp/work", updatedAt: "2026-08-11T00:00:00.000Z" }
+  ];
+  const choices = ["t2", "open"];
+  const events = [];
+  const services = {
+    projectService: {
+      async listTasks() { return tasks; },
+      async resolveTaskWorkspace(_projectId, taskId) {
+        return { task: tasks.find((task) => task.id === taskId), workspacePath: "/tmp/work" };
+      }
+    },
+    workflowEngine: {
+      async listAgentMessages() { return [{ role: "user", content: "历史问题" }]; }
+    },
+    platformKernel: {
+      tokenLedger: {
+        async summarizeUsage() { return { promptTokens: 1200, completionTokens: 80 }; }
+      }
+    }
+  };
+  const terminal = {
+    ui: {
+      async choose() { return choices.shift(); },
+      updateSession(value) { events.push(["session", value]); },
+      replaceConversationHistory(value) { events.push(["history", value]); },
+      setUsageText(value) { events.push(["usage", value]); },
+      addNotice(value) { events.push(["notice", value]); }
+    }
+  };
+  const session = { project: { id: "terminal" }, task: tasks[0], workspacePath: "/tmp/work" };
+  await runResumeMenu(services, terminal, session);
+  assert.equal(session.task.id, "t2");
+  assert.deepEqual(events[0], ["session", { workspacePath: "/tmp/work", taskTitle: "历史会话" }]);
+  assert.deepEqual(events[1], ["history", [{ role: "user", content: "历史问题" }]]);
+  assert.deepEqual(events[2], ["usage", "↑1.2k ↓80 C—"]);
+});
+
+test("CLI /resume 只删除选中会话数据，不改变当前工作空间", async () => {
+  const tasks = [
+    { id: "current", title: "当前", workspacePath: "/tmp/work" },
+    { id: "old", title: "可删除历史", workspacePath: "/tmp/work" }
+  ];
+  const choices = ["old", "delete", "delete"];
+  const deleted = [];
+  const notices = [];
+  const services = {
+    projectService: {
+      async listTasks() { return tasks; },
+      async deleteTask(projectId, taskId) { deleted.push([projectId, taskId]); }
+    }
+  };
+  const terminal = {
+    ui: {
+      async choose() { return choices.shift(); },
+      addSuccess(message) { notices.push(message); }
+    }
+  };
+  const session = { project: { id: "terminal" }, task: tasks[0], workspacePath: "/tmp/work" };
+  await runResumeMenu(services, terminal, session);
+  assert.deepEqual(deleted, [["terminal", "old"]]);
+  assert.equal(session.task.id, "current");
+  assert.match(notices[0], /已删除会话/);
+});
+
+test("CLI /new 创建并切换到真实的新会话", async () => {
+  const events = [];
+  const services = {
+    projectService: {
+      async createTask(projectId, payload) {
+        events.push(["create", projectId, payload.title]);
+        return { id: payload.id, title: payload.title, workspacePath: "" };
+      },
+      async bindTaskWorkspace(projectId, taskId, workspacePath) {
+        events.push(["bind", projectId, taskId, workspacePath]);
+        return { id: taskId, title: "work · 新会话", workspacePath };
+      }
+    }
+  };
+  const terminal = {
+    ui: {
+      updateSession(value) { events.push(["session", value]); },
+      replaceConversationHistory(value) { events.push(["history", value]); },
+      addNotice() {},
+      addSuccess(message) { events.push(["success", message]); }
+    }
+  };
+  const session = {
+    project: { id: "terminal" },
+    task: { id: "current" },
+    workspacePath: "/tmp/work"
+  };
+  await createNewSession(services, terminal, session);
+  assert.notEqual(session.task.id, "current");
+  assert.equal(session.workspacePath, "/tmp/work");
+  assert.equal(events.some((event) => event[0] === "bind"), true);
+  assert.deepEqual(events.find((event) => event[0] === "history"), ["history", []]);
+  assert.deepEqual(events.at(-1), ["success", "已创建新会话。"]);
+});
+
+test("CLI 从自然语言中确认用户明确指定的输出目录", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "yaoguo-cli-output-"));
+  const requested = path.join(root, "测试 222");
+  try {
+    await mkdir(requested);
+    const targets = await resolveExplicitOutputTargets(
+      `${requested} 在这里帮我做一个 ppt 课件。`
+    );
+    assert.deepEqual(targets, [{ path: await realpath(requested), kind: "directory" }]);
+    const requestedFile = path.join(root, "交付课件.pptx");
+    assert.deepEqual(
+      await resolveExplicitOutputTargets(`请把课件保存到 \`${requestedFile}\`。`),
+      [{ path: requestedFile, kind: "file" }]
+    );
+    assert.deepEqual(
+      await resolveExplicitOutputTargets(`读取 ${requested} 中的文件，并生成一份总结。`),
+      [],
+      "作为输入来源提及的路径不应被误认为交付位置"
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("CLI TUI 将模型 token 流、成品与 usage 交给同一对话界面", async () => {

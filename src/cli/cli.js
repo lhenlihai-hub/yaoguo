@@ -9,11 +9,15 @@ const readline = require("node:readline/promises");
 const { Writable } = require("node:stream");
 const { createApplicationServices } = require("../application/appServices");
 const { isPathInside } = require("../platform/shared/pathSafety");
-const { runUninstall } = require("./uninstall");
+const { runUninstall, archiveTaskPublishedArtifacts } = require("./uninstall");
 
 const PACKAGE_ROOT = path.resolve(__dirname, "../..");
 const PACKAGE_JSON = require(path.join(PACKAGE_ROOT, "package.json"));
 const DEFAULT_HOME_WORKSPACE = "Yaoguo Workspace";
+const EXPLICIT_ARTIFACT_EXTENSIONS = new Set([
+  ".docx", ".pdf", ".pptx", ".xlsx", ".html", ".htm", ".md", ".txt",
+  ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".csv", ".json", ".zip"
+]);
 
 function parseArgs(argv = []) {
   const options = {
@@ -102,12 +106,14 @@ function helpText() {
     "  -V, --version           显示版本",
     "",
     "交互命令：",
-    "  /model                  选择 Pro / Flash，并设置 DeepSeek API Key",
-    "  /usage                  查看当前会话累计 token 与缓存命中",
-    "  /tokens                 /usage 的别名",
+    "  /model                  模型、思考强度与 DeepSeek API Key",
+    "  /usage                  token、缓存命中与模型调用",
+    "  /resume                 打开或删除历史会话",
+    "  /new                    在当前工作空间新建会话",
+    "  /permissions            切换 Ask / All agree 授权模式",
     "  /clear                  清空当前屏幕，不删除已保存会话",
     "  /help                   查看交互命令与快捷键",
-    "  /exit                   退出交互会话",
+    "  /quit                   退出交互会话",
     "",
     "终端界面：Enter 发送，Shift+Enter 或 Ctrl+J 换行，Esc 中止当前任务，/ 打开菜单。",
     "",
@@ -242,12 +248,15 @@ async function modelConfiguration(settingsService, env = process.env) {
   const config = settings.deepseek || {};
   const envName = `${config.apiKeyEnv || "DEEPSEEK_API_KEY"}`;
   const model = config.model === "deepseek-v4-flash" ? "deepseek-v4-flash" : "deepseek-v4-pro";
+  const thinking = ["disabled", "high", "max"].includes(config.thinking) ? config.thinking : "max";
   const keySource = config.apiKey
     ? "本机私有配置"
     : (env[envName] ? `环境变量 ${envName}` : "未配置");
   return {
     model,
     modelLabel: model === "deepseek-v4-flash" ? "Flash" : "Pro",
+    thinking,
+    thinkingLabel: { disabled: "Thinking off", high: "High", max: "Max" }[thinking],
     keySource,
     available: Boolean(config.apiKey || env[envName])
   };
@@ -291,13 +300,14 @@ async function runModelMenu(settingsService, terminal, env = process.env) {
     const current = await modelConfiguration(settingsService, env);
     terminal.error.write([
       "\n模型设置",
-      `\n当前：${current.modelLabel} · API Key ${current.keySource}`,
+      `\n当前：${current.modelLabel} · ${current.thinkingLabel} · API Key ${current.keySource}`,
       "\n1. Pro",
       "\n2. Flash",
       "\n3. 设置或更新 API Key",
+      "\n4. 思考强度",
       "\n0. 返回\n"
     ].join(""));
-    const choice = (await terminal.rl.question("选择 [0-3]：")).trim().toLowerCase();
+    const choice = (await terminal.rl.question("选择 [0-4]：")).trim().toLowerCase();
     if (["", "0", "q"].includes(choice)) return current;
     if (["1", "2"].includes(choice)) {
       const model = choice === "1" ? "deepseek-v4-pro" : "deepseek-v4-flash";
@@ -321,7 +331,20 @@ async function runModelMenu(settingsService, terminal, env = process.env) {
       }
       return modelConfiguration(settingsService, env);
     }
-    terminal.error.write("请输入 0、1、2 或 3。\n");
+    if (["4", "t", "thinking"].includes(choice)) {
+      terminal.error.write("思考强度：1=关闭，2=High，3=Max\n");
+      const level = (await terminal.rl.question("选择 [1-3]：")).trim();
+      const thinking = { 1: "disabled", 2: "high", 3: "max" }[level];
+      if (thinking) {
+        await saveDeepSeekSettings(settingsService, { thinking });
+        const next = await modelConfiguration(settingsService, env);
+        terminal.error.write(`思考强度已设为 ${next.thinkingLabel}。\n`);
+        return next;
+      }
+      terminal.error.write("未修改思考强度。\n");
+      continue;
+    }
+    terminal.error.write("请输入 0、1、2、3 或 4。\n");
   }
 }
 
@@ -329,11 +352,12 @@ async function runTuiModelMenu(settingsService, terminal, env = process.env) {
   const current = await modelConfiguration(settingsService, env);
   const choice = await terminal.ui.choose({
     title: "模型设置",
-    description: `当前：${current.modelLabel} · API Key ${current.keySource}`,
+    description: `当前：${current.modelLabel} · ${current.thinkingLabel} · API Key ${current.keySource}`,
     selectedIndex: current.model === "deepseek-v4-flash" ? 1 : 0,
     items: [
       { value: "pro", label: "Pro", description: "DeepSeek V4 Pro" },
       { value: "flash", label: "Flash", description: "DeepSeek V4 Flash" },
+      { value: "thinking", label: "思考强度", description: "关闭 / High / Max，立即用于后续模型调用" },
       { value: "key", label: "API Key", description: "设置或更新本机密钥" },
       { value: "cancel", label: "返回", description: "保持当前设置" }
     ]
@@ -344,8 +368,21 @@ async function runTuiModelMenu(settingsService, terminal, env = process.env) {
       model: choice === "flash" ? "deepseek-v4-flash" : "deepseek-v4-pro"
     });
   }
+  if (choice === "thinking") {
+    const thinking = await terminal.ui.choose({
+      title: "思考强度",
+      description: "该设置会真实写入 DeepSeek thinking / reasoning_effort 请求参数。",
+      selectedIndex: ["disabled", "high", "max"].indexOf(current.thinking),
+      items: [
+        { value: "disabled", label: "关闭", description: "关闭模型思考模式" },
+        { value: "high", label: "High", description: "开启高强度思考" },
+        { value: "max", label: "Max", description: "开启最大思考强度" }
+      ]
+    });
+    if (thinking) await saveDeepSeekSettings(settingsService, { thinking });
+  }
   let next = await modelConfiguration(settingsService, env);
-  if (choice === "key" || !next.available) {
+  if (choice === "key" || (["pro", "flash"].includes(choice) && !next.available)) {
     const apiKey = await terminal.ui.promptSecret({
       title: "DeepSeek API Key",
       description: "输入已隐藏，不会写入终端历史。Esc 取消。"
@@ -358,6 +395,47 @@ async function runTuiModelMenu(settingsService, terminal, env = process.env) {
   next = await modelConfiguration(settingsService, env);
   terminal.ui.updateModel(next);
   if (["pro", "flash"].includes(choice)) terminal.ui.addSuccess(`已选择 ${next.modelLabel}。`);
+  if (choice === "thinking") terminal.ui.addSuccess(`思考强度已设为 ${next.thinkingLabel}。`);
+  return next;
+}
+
+async function permissionConfiguration(settingsService, terminal = null) {
+  const settings = await settingsService.get();
+  const mode = settings.permissions?.agent?.mode === "allow" ? "allow" : "ask";
+  const sessionOverride = terminal?.options?.autoApprove === true;
+  return {
+    mode: sessionOverride ? "allow" : mode,
+    label: sessionOverride || mode === "allow" ? "All agree" : "Ask"
+  };
+}
+
+async function runPermissionMenu(settingsService, terminal) {
+  const current = await permissionConfiguration(settingsService, terminal);
+  if (!terminal.ui) {
+    terminal.error.write(`当前授权模式：${current.label}\n1. Ask\n2. All agree\n0. 返回\n`);
+    const choice = (await terminal.rl.question("选择 [0-2]：")).trim();
+    if (!["1", "2"].includes(choice)) return current;
+    const mode = choice === "2" ? "allow" : "ask";
+    await settingsService.setAgentPermissionMode(mode);
+    terminal.options.autoApprove = mode === "allow";
+    return permissionConfiguration(settingsService, terminal);
+  }
+  const choice = await terminal.ui.choose({
+    title: "授权模式",
+    description: "All agree 自动同意工具授权，但路径、沙箱、无提权与私网拦截等安全边界仍然生效。",
+    selectedIndex: current.mode === "allow" ? 1 : 0,
+    items: [
+      { value: "ask", label: "Ask", description: "每次敏感操作前询问" },
+      { value: "allow", label: "All agree", description: "自动同意后续工具授权" },
+      { value: "cancel", label: "返回", description: "保持当前模式" }
+    ]
+  });
+  if (!choice || choice === "cancel") return current;
+  await settingsService.setAgentPermissionMode(choice);
+  terminal.options.autoApprove = choice === "allow";
+  const next = await permissionConfiguration(settingsService, terminal);
+  terminal.ui.updatePermissionMode(next.label);
+  terminal.ui.addSuccess(`授权模式已切换为 ${next.label}。`);
   return next;
 }
 
@@ -430,6 +508,118 @@ async function resolveSession(services, options = {}, runtime = {}) {
   return { project, task, ...workspaceSelection };
 }
 
+async function activateSession(services, terminal, session, selectedTask) {
+  let task = selectedTask;
+  let workspacePath = `${task?.workspacePath || session.workspacePath || ""}`;
+  if (task?.workspacePath) {
+    const resolved = await services.projectService.resolveTaskWorkspace(session.project.id, task.id);
+    task = resolved.task;
+    workspacePath = resolved.workspacePath;
+  } else if (workspacePath) {
+    task = await services.projectService.bindTaskWorkspace(session.project.id, task.id, workspacePath);
+  }
+  session.task = task;
+  session.workspacePath = workspacePath;
+  if (terminal.ui) {
+    terminal.ui.updateSession({ workspacePath, taskTitle: task.title || task.id });
+    terminal.ui.replaceConversationHistory(await loadTerminalHistory(services, session));
+    const usage = await sessionUsage(services, session).catch(() => null);
+    if (usage) terminal.ui.setUsageText(formatTuiUsage(usage));
+    terminal.ui.addNotice(`已打开会话：${task.title || task.id}\n${workspacePath}`);
+  }
+  return session;
+}
+
+async function createNewSession(services, terminal, session) {
+  const task = await services.projectService.createTask(session.project.id, {
+    id: `session-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
+    title: `${path.basename(session.workspacePath)} · 新会话`
+  });
+  await activateSession(services, terminal, session, task);
+  terminal.ui?.addSuccess("已创建新会话。");
+  return session;
+}
+
+async function runResumeMenu(services, terminal, session) {
+  const tasks = await services.projectService.listTasks(session.project.id);
+  if (!terminal.ui) {
+    terminal.error.write("/resume 历史管理需要完整 TUI。\n");
+    return session;
+  }
+  if (!tasks.length) {
+    terminal.ui.addNotice("没有可恢复的历史会话。");
+    return session;
+  }
+  const selectedId = await terminal.ui.choose({
+    title: "历史会话",
+    description: "选择会话后可以打开或删除；路径完整显示。",
+    selectedIndex: Math.max(0, tasks.findIndex((task) => task.id === session.task.id)),
+    items: tasks.map((task) => ({
+      value: task.id,
+      label: `${task.id === session.task.id ? "● " : ""}${task.title || task.id}`,
+      description: `${task.workspacePath || "未绑定工作空间"} · ${formatTaskTime(task.updatedAt || task.createdAt)}`
+    }))
+  });
+  if (!selectedId) return session;
+  const task = tasks.find((item) => item.id === selectedId);
+  if (!task) return session;
+  const action = await terminal.ui.choose({
+    title: task.title || task.id,
+    description: `${task.workspacePath || "未绑定工作空间"}\n${task.id}`,
+    items: [
+      { value: "open", label: "打开", description: "切换到该会话并恢复最近对话" },
+      { value: "delete", label: "删除", description: "删除会话记录和受管任务数据" },
+      { value: "cancel", label: "返回", description: "不做修改" }
+    ]
+  });
+  if (action === "open") return activateSession(services, terminal, session, task);
+  if (action !== "delete") return session;
+  const confirmed = await terminal.ui.choose({
+    title: "确认删除会话",
+    description: `将删除“${task.title || task.id}”及其受管数据。工作空间中的用户文件不会删除。`,
+    selectedIndex: 1,
+    items: [
+      { value: "delete", label: "确认删除", description: "此操作不可撤销" },
+      { value: "cancel", label: "取消", description: "保留该会话" }
+    ]
+  });
+  if (confirmed !== "delete") return session;
+  const deletingCurrent = task.id === session.task.id;
+  const archived = await preserveTaskArtifacts(services, session.project.id, task.id);
+  await services.projectService.deleteTask(session.project.id, task.id);
+  if (deletingCurrent) {
+    await createNewSession(services, terminal, session);
+    if (archived.count) terminal.ui.addSuccess(`已保留 ${archived.count} 个成品：${archived.directory}`);
+  } else terminal.ui.addSuccess([
+    `已删除会话：${task.title || task.id}`,
+    archived.count ? `已保留 ${archived.count} 个成品：${archived.directory}` : ""
+  ].filter(Boolean).join("\n"));
+  return session;
+}
+
+async function preserveTaskArtifacts(services, projectId, taskId) {
+  const projectRoot = `${services?.paths?.projectRoot || ""}`.trim();
+  if (!projectRoot || typeof services?.projectService?.getTaskDir !== "function") {
+    return { count: 0, bytes: 0, directory: "" };
+  }
+  const resolvedRoot = path.resolve(projectRoot);
+  const artifactRoot = path.basename(resolvedRoot) === "runtime"
+    ? path.join(path.dirname(resolvedRoot), "artifacts")
+    : path.join(resolvedRoot, "artifacts");
+  return archiveTaskPublishedArtifacts({
+    taskDir: services.projectService.getTaskDir(projectId, taskId),
+    artifactRoot,
+    projectId,
+    taskId
+  });
+}
+
+function formatTaskTime(value = "") {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "时间未知";
+  return new Date(timestamp).toLocaleString("zh-CN", { hour12: false });
+}
+
 function activityReporter(terminal) {
   let previous = "";
   return (activity = {}) => {
@@ -437,15 +627,16 @@ function activityReporter(terminal) {
     if (!terminal.interactive && !terminal.options.verbose) return;
     const label = `${activity.label || activity.status || ""}`.trim();
     if (!label || label === previous) return;
+    if (terminal.ui) {
+      previous = activity.status === "completed" ? "" : label;
+      terminal.ui.recordActivity(activity);
+      return;
+    }
     if (!terminal.options.verbose && activity.kind === "tool" && activity.status !== "running") {
       previous = "";
       return;
     }
     previous = label;
-    if (terminal.ui) {
-      terminal.ui.setActivity(label, activity.status);
-      return;
-    }
     const icon = activity.status === "completed"
       ? "✓"
       : (activity.status === "blocked" ? "!" : (activity.kind === "tool" ? "↳" : "◆"));
@@ -516,19 +707,81 @@ function formatTuiUsage(usage = {}) {
   return `↑${formatTuiCount(usage.promptTokens)} ↓${formatTuiCount(usage.completionTokens)} C${cache}`;
 }
 
+async function resolveExplicitOutputTargets(message = "") {
+  const source = `${message || ""}`;
+  if (!/(?:输出|保存|存到|写到|放到|生成|制作|交付|这里|目录|位置)/u.test(source)) return [];
+  const targets = [];
+  const matches = [...source.matchAll(/(?:^|[\s"'`“‘（(])(\/[^\r\n"'`”’）)，。；;！!？?]+)/gu)];
+  for (const match of matches) {
+    const fragment = `${match[1] || ""}`.trim();
+    const fragmentStart = Number(match.index) + `${match[0] || ""}`.indexOf(match[1]);
+    let candidate = fragment.replace(/[，。；;！!？?：:]+$/gu, "").trim();
+    while (candidate.startsWith("/")) {
+      const stat = await fsp.stat(candidate).catch(() => null);
+      if (stat?.isDirectory()) {
+        if (isExplicitOutputContext(source, fragmentStart, candidate.length)) {
+          targets.push({ path: await fsp.realpath(candidate), kind: "directory" });
+        }
+        break;
+      }
+      if (stat?.isFile()) {
+        if (isExplicitOutputContext(source, fragmentStart, candidate.length)) {
+          targets.push({ path: await fsp.realpath(candidate), kind: "file" });
+        }
+        break;
+      }
+      const extension = path.extname(candidate).toLowerCase();
+      const parent = path.dirname(candidate);
+      const parentStat = await fsp.stat(parent).catch(() => null);
+      if (parentStat?.isDirectory() && EXPLICIT_ARTIFACT_EXTENSIONS.has(extension)) {
+        if (isExplicitOutputContext(source, fragmentStart, candidate.length)) {
+          targets.push({ path: path.resolve(candidate), kind: "file" });
+        }
+        break;
+      }
+      const shorter = candidate.replace(/\s+\S+$/u, "").trim();
+      if (!shorter || shorter === candidate) break;
+      candidate = shorter;
+    }
+  }
+  return [...new Map(targets.map((target) => [target.path, target])).values()].slice(0, 4);
+}
+
+function isExplicitOutputContext(source, start, length) {
+  const before = source
+    .slice(Math.max(0, start - 40), start)
+    .replace(/["'`“‘（(]\s*$/u, "");
+  const after = source.slice(start + length, start + length + 60);
+  const outputBefore = /(?:输出|保存|存到|写入|写到|放到|生成|制作|交付)(?:到|至|在)?(?:目录|位置)?[\s：:]*$/u;
+  const hereAfter = /^\s*(?:在\s*)?(?:这里|这个(?:目录|位置)?|该(?:目录|位置)?)(?:里|下|中)?\s*(?:帮我|请)?\s*(?:做|制作|生成|输出|保存|写|放|交付)/u;
+  const locatedBefore = /(?:在|到|至)[\s：:]*$/u;
+  const outputAfter = /^\s*(?:中|里|下)?\s*(?:制作|生成|输出|保存|写入|放置|交付)/u;
+  return outputBefore.test(before) || hereAfter.test(after) || (locatedBefore.test(before) && outputAfter.test(after));
+}
+
 async function runTurn(services, terminal, session, message) {
   const startedAt = Date.now();
   const controller = new AbortController();
   terminal.activeController = controller;
   let streamed = false;
   let result;
+  const explicitOutputTargets = await resolveExplicitOutputTargets(message);
   const tuiStream = terminal.ui?.beginAssistant();
+  for (const target of explicitOutputTargets) {
+    terminal.ui?.recordActivity({
+      phase: `output-target-${target.path}`,
+      status: "completed",
+      label: "已确认指定输出位置",
+      target: target.path
+    });
+  }
   try {
     result = await services.workflowEngine.submitAgentInput({
       message,
       projectId: session.project.id,
       taskId: session.task.id,
       source: "terminal",
+      explicitOutputTargets,
       turnId: crypto.randomUUID()
     }, {
       signal: controller.signal,
@@ -537,6 +790,10 @@ async function runTurn(services, terminal, session, message) {
         streamed = true;
         if (terminal.ui) terminal.ui.appendAssistant(tuiStream, delta);
         else terminal.output.write(delta);
+      },
+      onReasoning: terminal.options.json ? null : (delta, event) => {
+        if (!terminal.ui) return;
+        terminal.ui.appendReasoning(tuiStream, delta, event);
       }
     });
   } catch (error) {
@@ -588,10 +845,12 @@ async function runInteractive(services, terminal, session, env = process.env) {
 
 async function runInteractiveReadline(services, terminal, session, env = process.env) {
   const initialModel = await modelConfiguration(services.settingsService, env);
+  const initialPermission = await permissionConfiguration(services.settingsService, terminal);
   terminal.error.write([
     `腰果终端版 ${PACKAGE_JSON.version}`,
     `\n工作空间：${session.workspacePath}`,
-    `\n模型：${initialModel.modelLabel} · API Key ${initialModel.keySource}`,
+    `\n模型：${initialModel.modelLabel} · ${initialModel.thinkingLabel} · API Key ${initialModel.keySource}`,
+    `\n授权：${initialPermission.label}`,
     initialModel.available ? "" : "\n输入 /model 完成模型与 API Key 设置。",
     "\n输入 /exit 退出。\n\n"
   ].join(""));
@@ -614,6 +873,26 @@ async function runInteractiveReadline(services, terminal, session, env = process
       terminal.error.write("\n");
       continue;
     }
+    if (message.toLowerCase() === "/new") {
+      await createNewSession(services, terminal, session);
+      continue;
+    }
+    if (message.toLowerCase() === "/resume") {
+      await runResumeMenu(services, terminal, session);
+      continue;
+    }
+    if (message.toLowerCase() === "/permissions") {
+      await runPermissionMenu(services.settingsService, terminal);
+      continue;
+    }
+    if (message.toLowerCase() === "/help") {
+      terminal.output.write(`${helpText()}\n`);
+      continue;
+    }
+    if (message.startsWith("/")) {
+      terminal.error.write(`未知命令：${message}\n`);
+      continue;
+    }
     try {
       await ensureModelAvailable(services.settingsService, env);
     } catch (error) {
@@ -630,9 +909,13 @@ async function runInteractiveReadline(services, terminal, session, env = process
 async function runInteractiveTui(services, terminal, session, env = process.env) {
   const { createTerminalUi } = require("./tui/terminalUi");
   const initialModel = await modelConfiguration(services.settingsService, env);
+  const initialPermission = await permissionConfiguration(services.settingsService, terminal);
   const ui = await createTerminalUi({
     workspacePath: session.workspacePath,
+    taskTitle: session.task.title || session.task.id,
     modelLabel: initialModel.modelLabel,
+    thinkingLabel: initialModel.thinkingLabel,
+    permissionLabel: initialPermission.label,
     keyAvailable: initialModel.available,
     version: PACKAGE_JSON.version
   });
@@ -680,6 +963,18 @@ async function handleTuiSubmission(services, terminal, session, message, env = p
     await printSessionUsage(services, terminal, session);
     return;
   }
+  if (command === "/resume") {
+    await runResumeMenu(services, terminal, session);
+    return;
+  }
+  if (command === "/new") {
+    await createNewSession(services, terminal, session);
+    return;
+  }
+  if (command === "/permissions") {
+    await runPermissionMenu(services.settingsService, terminal);
+    return;
+  }
   if (command === "/clear") {
     terminal.ui.clearConversation();
     terminal.ui.addNotice("已清空当前屏幕，已保存的会话与成品未删除。");
@@ -689,10 +984,17 @@ async function handleTuiSubmission(services, terminal, session, message, env = p
     terminal.ui.addNotice([
       "/model  模型与 API Key",
       "/usage  token 与缓存命中",
+      "/resume 打开或删除历史会话",
+      "/new    新建会话",
+      "/permissions  Ask / All agree",
       "/clear  清空当前屏幕",
-      "/exit   退出",
+      "/quit   退出",
       "Enter 发送 · Shift+Enter 换行 · Esc/Ctrl+C 中止任务"
     ].join("\n"));
+    return;
+  }
+  if (command.startsWith("/")) {
+    terminal.ui.addError(`未知命令：${message}`);
     return;
   }
   terminal.ui.addUserMessage(message);
@@ -782,6 +1084,8 @@ module.exports = {
   isModelCommand,
   modelConfiguration,
   runModelMenu,
+  permissionConfiguration,
+  runPermissionMenu,
   formatUsage,
   formatTuiUsage,
   isUsageCommand,
@@ -789,6 +1093,10 @@ module.exports = {
   workspaceTaskId,
   resolveWorkspaceSelection,
   resolveSession,
+  activateSession,
+  createNewSession,
+  runResumeMenu,
+  resolveExplicitOutputTargets,
   runTurn,
   runInteractive,
   main

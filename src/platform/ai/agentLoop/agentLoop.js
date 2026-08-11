@@ -279,6 +279,7 @@ async function continueAiRouterTask(state, context, tokenBuffer) {
     tools: state.runtime.openAiSchemas(context.tools),
     toolChoice: state.options.runTaskArgs?.toolChoice || null,
     onToken: tokenBuffer.capture,
+    onReasoning: state.options.runTaskArgs?.onReasoning || null,
     signal: state.executionBudget.signal || state.options.runTaskArgs?.signal || null,
     executionBudget: state.executionBudget,
     providerAttemptPreclaimed: true,

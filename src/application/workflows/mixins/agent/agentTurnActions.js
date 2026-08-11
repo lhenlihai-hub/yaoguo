@@ -5,7 +5,7 @@ async executeAgentTurn({
   state = null, step = null, instruction = "", title = "腰果 Agent",
   additionalRunContext = "",
   requestOverrides = {}, requestedToolNames = null, maxRounds = null,
-  signal = null, onToken = null, onToolEvent = null
+  explicitOutputTargets = [], signal = null, onToken = null, onReasoning = null, onToolEvent = null
 } = {}) {
   const preparedInput = await this.prepareAgentInputForModel({
     projectId, taskId, turnId, message
@@ -25,6 +25,7 @@ async executeAgentTurn({
       title,
       ...requestOverrides,
       onToken,
+      onReasoning,
       projectId,
       taskId,
       runId,
@@ -40,6 +41,7 @@ async executeAgentTurn({
     turnId,
     fileReferences,
     requestedToolNames,
+    explicitOutputTargets,
     maxRounds,
     message,
     onToolEvent

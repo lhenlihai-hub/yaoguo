@@ -19,7 +19,6 @@ const ansi = Object.freeze({
   white: style(`${ESC}38;2;244;248;255m`, `${ESC}39m`),
   muted: style(`${ESC}38;2;139;153;173m`, `${ESC}39m`),
   code: style(`${ESC}38;2;174;214;255m`, `${ESC}39m`),
-  userBackground: style(`${ESC}48;2;20;82;138m`, `${ESC}49m`),
   panelBackground: style(`${ESC}48;2;24;33;48m`, `${ESC}49m`),
   selectionBackground: style(`${ESC}48;2;35;91;145m`, `${ESC}49m`),
   underline: style(`${ESC}4m`, `${ESC}24m`),
@@ -59,16 +58,22 @@ function createTuiTheme() {
       codeBlockIndent: "  "
     },
     userText: {
-      color: (text) => ansi.white(text),
-      bgColor: (text) => ansi.userBackground(text)
+      color: (text) => ansi.blueBright(text)
     }
   };
 }
 
 function formatHeader(version) {
+  const cashews = [
+    "  ╭──╮    ╭──╮    ╭──╮",
+    " ╭╯  ╰╮  ╭╯  ╰╮  ╭╯  ╰╮",
+    " ╰╮ ╭─╯  ╰╮ ╭─╯  ╰╮ ╭─╯",
+    "  ╰─╯      ╰─╯      ╰─╯"
+  ].map((line) => ansi.blue(line));
   return [
-    `${ansi.blueBright(ansi.bold("腰果"))} ${ansi.muted(`v${version}`)}`,
-    ansi.muted("基于 Pi · DeepSeek only · / 打开命令菜单")
+    ansi.blueBright(ansi.bold("欢迎使用腰果")),
+    ...cashews,
+    ansi.muted(`v${version} · DeepSeek only · / 打开命令菜单`)
   ].join("\n");
 }
 

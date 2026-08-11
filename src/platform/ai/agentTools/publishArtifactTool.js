@@ -30,6 +30,7 @@ const PUBLISH_ARTIFACT_TOOL_SCHEMA = {
     description: [
       "发布一个已经 inspect_artifact 检查、且由你确认满足用户要求的最终文件。",
       "发布是所有文件进入成品区的唯一出口；生成工具成功只代表候选文件存在。",
+      "用户明确指定输出目录或文件时，使用 destination；宿主只允许写入本轮从用户原话确认的目标。",
       "源码、构建脚本、草稿、缓存和临时预览不要发布，除非它们就是用户要求的交付物。"
     ].join(""),
     parameters: {
@@ -49,6 +50,11 @@ const PUBLISH_ARTIFACT_TOOL_SCHEMA = {
           type: "string",
           maxLength: 120,
           description: "可选。右侧成品区显示的标题；不填使用文件名。"
+        },
+        destination: {
+          type: "string",
+          minLength: 1,
+          description: "可选。用户明确指定的绝对输出目录或完整文件路径。只有本轮已确认的目标可用。"
         }
       },
       required: ["path", "inspectionId"],
@@ -69,20 +75,28 @@ const publishArtifactTool = {
       throw new Error("inspectionId 不属于该文件，请先调用 inspect_artifact。");
     }
     if (!inspection.valid) throw new Error("候选文件的真实检查未通过，不能发布。");
+    const deliveryPlan = await resolveExplicitDelivery(args.destination, ctx.explicitOutputTargets);
+    await assertExplicitDeliveryAllowed(deliveryPlan, ctx.explicitOutputDenyRoots);
     const title = `${args.title || ""}`.trim() || path.basename(canonical);
-    const { absolute, sha256 } = await snapshotInspectedArtifact({
+    const { absolute: managedAbsolute, sha256 } = await snapshotInspectedArtifact({
       source: canonical,
       taskDir: ctx.taskDir,
       expectedSha256: inspection.sha256,
       inspectionId,
       inspectedAt: inspection.inspectedAt,
-      title
+      title,
+      removeSource: !deliveryPlan
     });
+    const absolute = deliveryPlan
+      ? await copyPublishedArtifact(managedAbsolute, deliveryPlan, path.basename(canonical))
+      : managedAbsolute;
+    if (deliveryPlan) await removeInternalCandidate(canonical, await fsp.realpath(ctx.taskDir));
     if (inspection.snapshot) await fsp.unlink(inspection.snapshot).catch(() => {});
-    markCandidatePublished(ctx, canonical, absolute, inspectionId);
+    markCandidatePublished(ctx, canonical, managedAbsolute, inspectionId);
     const publishedStat = await fsp.stat(absolute);
     return {
       absolute,
+      managedAbsolute,
       file: path.basename(absolute),
       title,
       bytes: publishedStat.size,
@@ -95,8 +109,82 @@ const publishArtifactTool = {
   }
 };
 
+async function resolveExplicitDelivery(requestedDestination = "", rawTargets = []) {
+  const targets = [];
+  for (const item of Array.isArray(rawTargets) ? rawTargets : []) {
+    const raw = `${item?.path || ""}`.trim();
+    if (!raw || !path.isAbsolute(raw) || path.resolve(raw) === path.parse(path.resolve(raw)).root) continue;
+    if (item?.kind === "file") {
+      const parent = await fsp.realpath(path.dirname(path.resolve(raw))).catch(() => "");
+      if (parent) targets.push({ kind: "file", path: path.join(parent, path.basename(raw)) });
+      continue;
+    }
+    const directory = await fsp.realpath(path.resolve(raw)).catch(() => "");
+    const stat = directory ? await fsp.stat(directory).catch(() => null) : null;
+    if (stat?.isDirectory()) targets.push({ kind: "directory", path: directory });
+  }
+  if (!targets.length) {
+    if (`${requestedDestination || ""}`.trim()) {
+      throw new Error("destination 不是用户在本轮明确指定的输出位置。");
+    }
+    return null;
+  }
+  const requested = `${requestedDestination || ""}`.trim();
+  if (!requested) {
+    if (targets.length === 1) return targets[0];
+    throw new Error("用户指定了多个输出位置，请通过 destination 明确选择一个。");
+  }
+  if (!path.isAbsolute(requested)) throw new Error("destination 必须是绝对路径。");
+  const resolved = path.resolve(requested);
+  for (const target of targets) {
+    if (target.kind === "file" && resolved === target.path) return target;
+    if (target.kind !== "directory") continue;
+    if (resolved === target.path) return target;
+    const parent = await fsp.realpath(path.dirname(resolved)).catch(() => "");
+    if (parent && (parent === target.path || isPathInside(target.path, parent))) {
+      return { kind: "file", path: path.join(parent, path.basename(resolved)) };
+    }
+  }
+  throw new Error("destination 超出用户在本轮明确指定的输出位置。");
+}
+
+async function copyPublishedArtifact(source, plan, originalFileName = path.basename(source)) {
+  const requested = plan.kind === "directory"
+    ? path.join(plan.path, originalFileName)
+    : plan.path;
+  const extension = path.extname(requested);
+  const base = path.basename(requested, extension);
+  const directory = path.dirname(requested);
+  for (let version = 1; ; version += 1) {
+    const fileName = version === 1 ? path.basename(requested) : `${base}-v${version}${extension}`;
+    const destination = path.join(directory, fileName);
+    try {
+      await fsp.copyFile(source, destination, fsConstants.COPYFILE_EXCL);
+      return await fsp.realpath(destination);
+    } catch (error) {
+      if (error?.code === "EEXIST") continue;
+      throw new Error(`无法把成品写入用户指定位置：${destination}`, { cause: error });
+    }
+  }
+}
+
+async function assertExplicitDeliveryAllowed(plan, rawDenyRoots = []) {
+  if (!plan) return;
+  const destination = path.resolve(plan.path);
+  const segments = destination.split(path.sep).filter(Boolean);
+  if (segments.some((segment) => [".git", ".agents", ".codex"].includes(segment))) {
+    throw new Error("用户指定的输出位置属于宿主控制目录，不能写入。");
+  }
+  for (const rawRoot of Array.isArray(rawDenyRoots) ? rawDenyRoots : []) {
+    const root = await fsp.realpath(path.resolve(`${rawRoot || ""}`)).catch(() => "");
+    if (root && (destination === root || isPathInside(root, destination))) {
+      throw new Error("用户指定的输出位置属于腰果运行数据，不能写入。");
+    }
+  }
+}
+
 async function snapshotInspectedArtifact({
-  source, taskDir, expectedSha256, inspectionId, inspectedAt, title
+  source, taskDir, expectedSha256, inspectionId, inspectedAt, title, removeSource = true
 }) {
   const requestedTaskRoot = `${taskDir || ""}`.trim();
   if (!requestedTaskRoot) throw new Error("publish_artifact 缺少当前任务目录。");
@@ -144,7 +232,7 @@ async function snapshotInspectedArtifact({
         inspectedAt
       }
     });
-    await removeInternalCandidate(source, taskRoot);
+    if (removeSource) await removeInternalCandidate(source, taskRoot);
     return { absolute: committed.absolute, sha256: copied.sha256 };
   } finally {
     await sourceHandle?.close().catch(() => {});

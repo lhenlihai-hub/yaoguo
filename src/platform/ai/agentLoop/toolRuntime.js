@@ -1023,6 +1023,8 @@ function traceTarget(name, args = {}) {
       value: openUrl || `${args?.command || ""}`
     };
   }
+  const destination = `${args?.destination || ""}`.trim();
+  if (destination) return { kind: "path", value: destination };
   const rawPath = `${args?.path || args?.target || ""}`.trim();
   if (rawPath) return { kind: "path", value: rawPath };
   const rawUrl = `${args?.url || ""}`.trim();
@@ -1047,6 +1049,8 @@ function safeToolEventArguments(name, args = {}) {
     const openUrl = parseExternalOpenCommand(args?.command);
     return { target: openUrl ? displaySafeUrl(openUrl) : "shell command" };
   }
+  const destination = `${args?.destination || ""}`.trim();
+  if (destination) return { target: destination };
   const rawPath = `${args?.path || args?.target || ""}`.trim();
   if (rawPath) return { target: rawPath };
   const rawUrl = `${args?.url || ""}`.trim();

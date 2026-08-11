@@ -346,21 +346,35 @@ function describeArtifactPublish(args, context, cwd) {
   const taskDir = `${context?.taskDir || ""}`.trim();
   const finalDir = taskDir ? path.resolve(taskDir, "final") : "(当前任务受管 final 目录不可用)";
   const destination = taskDir ? path.join(finalDir, path.basename(source)) : finalDir;
+  const requested = `${args?.destination || ""}`.trim();
+  const explicitTargets = Array.isArray(context?.explicitOutputTargets)
+    ? context.explicitOutputTargets
+    : [];
+  const automatic = !requested && explicitTargets.length === 1 ? explicitTargets[0] : null;
+  const external = requested
+    ? path.resolve(requested)
+    : (automatic?.kind === "file"
+      ? path.resolve(automatic.path)
+      : (automatic?.path ? path.join(path.resolve(automatic.path), path.basename(source)) : ""));
   const target = [
     `已检查来源：${source}`,
-    `→ 受管最终成品：${destination}（同名时创建新版本）`
-  ].join("\n");
+    `→ 受管最终成品：${destination}（同名时创建新版本）`,
+    external ? `→ 用户指定位置：${external}（同名时创建新版本）` : ""
+  ].filter(Boolean).join("\n");
   const exact = [
     "artifact_publish",
     source,
     finalDir,
+    external,
     `${args?.title || ""}`.trim()
   ].join("\n");
   return permissionResource(
     "artifact_publish",
     exact,
     target,
-    "工具 publish_artifact 请求把已检查候选发布到当前任务的受管成品区。"
+    external
+      ? "工具 publish_artifact 请求保留受管成品，并复制到用户明确指定的位置。"
+      : "工具 publish_artifact 请求把已检查候选发布到当前任务的受管成品区。"
   );
 }
 

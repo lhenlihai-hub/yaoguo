@@ -32,9 +32,12 @@ test("ModelGateway 流式请求开启 usage，并保留末尾 DeepSeek 缓存统
   const gateway = new ModelGateway();
   const originalFetch = globalThis.fetch;
   let body = null;
+  const reasoning = [];
   globalThis.fetch = async (_url, init) => {
     body = JSON.parse(init.body);
     const stream = [
+      'data: {"choices":[{"delta":{"reasoning_content":"先核对"}}]}\n\n',
+      'data: {"choices":[{"delta":{"reasoning_content":"路径。"}}]}\n\n',
       'data: {"choices":[{"delta":{"content":"完成"}}]}\n\n',
       'data: {"choices":[],"usage":{"prompt_tokens":120,"completion_tokens":8,"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":40}}\n\n',
       "data: [DONE]\n\n"
@@ -46,13 +49,22 @@ test("ModelGateway 流式请求开启 usage，并保留末尾 DeepSeek 缓存统
       { id: "deepseek", apiKey: "test", baseUrl: "https://api.deepseek.com" },
       "deepseek-v4-pro",
       [{ role: "user", content: "hi" }],
-      { onToken: () => {}, taskType: "agent", settings: { deepseek: { thinking: "disabled" } } }
+      {
+        onToken: () => {},
+        onReasoning: (delta, event) => reasoning.push({ delta, event }),
+        taskType: "agent",
+        settings: { deepseek: { thinking: "disabled" } }
+      }
     );
     assert.deepEqual(body.stream_options, { include_usage: true });
     assert.equal(response.usage.promptTokens, 120);
     assert.equal(response.usage.cacheHitTokens, 80);
     assert.equal(response.usage.cacheMissTokens, 40);
     assert.equal(response.usage.cacheHitRate, 0.6667);
+    assert.equal(response.reasoningContent, "先核对路径。");
+    assert.deepEqual(reasoning.slice(0, 2).map((item) => item.delta), ["先核对", "路径。"]);
+    assert.equal(reasoning.at(-1).event.phase, "complete");
+    assert.equal(Number.isFinite(reasoning.at(-1).event.durationMs), true);
   } finally {
     globalThis.fetch = originalFetch;
   }

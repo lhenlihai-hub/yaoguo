@@ -46,6 +46,7 @@ const agentExecutionActions = {
     runId = "",
     stepId = "",
     onToken = null,
+    onReasoning = null,
     signal = null
   } = {}) {
     return {
@@ -62,6 +63,7 @@ const agentExecutionActions = {
       runId,
       stepId,
       onToken,
+      onReasoning,
       signal
     };
   },
@@ -84,6 +86,7 @@ const agentExecutionActions = {
     stepId = "",
     turnId = "",
     fileReferences = [],
+    explicitOutputTargets = [],
     requestedToolNames = null,
     maxRounds = null,
     message = "",
@@ -92,7 +95,8 @@ const agentExecutionActions = {
     const request = /** @type {any} */ (runTaskArgs);
     const registry = createAgentToolRegistry();
     const toolCtx = /** @type {any} */ (await this._buildAgentToolContext({
-      projectId, taskId, runId, runDir, handoffDir, stepId, turnId, fileReferences, registry
+      projectId, taskId, runId, runDir, handoffDir, stepId, turnId,
+      fileReferences, explicitOutputTargets, registry
     }));
     const memoryCacheScope = this.memoryCacheService?.taskScope?.(projectId, taskId) || "";
     if (memoryCacheScope) {
@@ -331,6 +335,7 @@ const agentExecutionActions = {
     stepId = "",
     turnId = "",
     fileReferences = [],
+    explicitOutputTargets = [],
     registry = null
   } = {}) {
     const taskDir = projectId && taskId && this.projectService?.getTaskDir
@@ -394,6 +399,10 @@ const agentExecutionActions = {
       this.paths?.registriesDir,
       this.paths?.schedulesDir
     ].filter(Boolean);
+    const installationRoot = this.paths?.projectRoot
+      && path.basename(path.resolve(this.paths.projectRoot)) === "runtime"
+      ? path.dirname(path.resolve(this.paths.projectRoot))
+      : "";
     return {
       artifactStore: this.artifactStore || null,
       todoStore: this.todoStore || null,
@@ -430,6 +439,8 @@ const agentExecutionActions = {
       agentReadScopeDeny: hostReadDeny,
       agentWriteScopeDeny: hostWriteDeny,
       authorizedReferencePaths,
+      explicitOutputTargets: normalizeExplicitOutputTargets(explicitOutputTargets),
+      explicitOutputDenyRoots: [this.paths?.workspace, installationRoot].filter(Boolean),
       contextResultDir: taskDir
         ? path.join(
           taskDir,
@@ -639,6 +650,17 @@ async function resolveAgentWorkspace(projectService, projectId, taskId, task) {
   return workspaceIdentity.canonicalPath;
 }
 
+function normalizeExplicitOutputTargets(values = []) {
+  const normalized = (Array.isArray(values) ? values : [])
+    .filter((target) => `${target?.path || ""}`.trim())
+    .map((target) => ({
+      path: path.resolve(`${target?.path || ""}`),
+      kind: target?.kind === "file" ? "file" : "directory"
+    }))
+    .filter((target) => path.isAbsolute(target.path) && target.path !== path.parse(target.path).root);
+  return [...new Map(normalized.map((target) => [target.path, target])).values()].slice(0, 4);
+}
+
 async function collectAgentFileArtifacts(toolCalls = [], toolCtx = {}) {
   const files = new Map();
   const publishedRoot = await canonicalDir(
@@ -647,23 +669,29 @@ async function collectAgentFileArtifacts(toolCalls = [], toolCtx = {}) {
   if (!publishedRoot) return [];
   for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
     if (call?.name !== "publish_artifact" || call?.result?.ok !== true) continue;
-    const requestedPath = `${call?.result?.value?.absolute || call?.args?.path || ""}`.trim();
-    if (!requestedPath) continue;
-    const absolute = path.resolve(
-      path.isAbsolute(requestedPath)
-        ? requestedPath
-        : path.join(toolCtx.agentWorkDir || toolCtx.taskDir || process.cwd(), requestedPath)
+    const deliveredPath = `${call?.result?.value?.absolute || call?.args?.path || ""}`.trim();
+    const managedPath = `${call?.result?.value?.managedAbsolute || deliveredPath}`.trim();
+    if (!deliveredPath || !managedPath) continue;
+    const managedAbsolute = path.resolve(
+      path.isAbsolute(managedPath)
+        ? managedPath
+        : path.join(toolCtx.agentWorkDir || toolCtx.taskDir || process.cwd(), managedPath)
     );
-    const canonical = await fsp.realpath(absolute).catch(() => "");
-    if (!canonical || canonical === publishedRoot || !pathIsInside(publishedRoot, canonical)) continue;
-    const artifact = await describeAgentFileArtifact(absolute, toolCtx, {
+    const managedCanonical = await fsp.realpath(managedAbsolute).catch(() => "");
+    if (!managedCanonical || managedCanonical === publishedRoot || !pathIsInside(publishedRoot, managedCanonical)) continue;
+    const deliveredAbsolute = path.resolve(
+      path.isAbsolute(deliveredPath)
+        ? deliveredPath
+        : path.join(toolCtx.agentWorkDir || toolCtx.taskDir || process.cwd(), deliveredPath)
+    );
+    const artifact = await describeAgentFileArtifact(deliveredAbsolute, toolCtx, {
       title: `${call?.args?.title || ""}`.trim(),
       source: "agent-publish",
       sha256: `${call?.result?.value?.sha256 || ""}`,
       inspectionId: `${call?.result?.value?.inspectionId || ""}`
     }).catch(() => null);
     if (!artifact) continue;
-    files.set(canonical, artifact);
+    files.set(artifact.absolute, artifact);
   }
   return [...files.values()];
 }

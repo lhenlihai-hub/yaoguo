@@ -186,18 +186,24 @@ test("精确工作区授权包含操作族，普通写入不能授权生成或�
 test("发布授权卡片显示已检查来源到受管 final 的实际边界", () => {
   const workDir = path.join(tmpdir(), "yaoguo-publish-source");
   const taskDir = path.join(tmpdir(), "yaoguo-publish-task");
+  const externalDir = path.join(tmpdir(), "yaoguo-publish-user-output");
   const request = describeToolPermission(toolInput("publish_artifact", {
     path: "report.md",
     inspectionId: "inspection_1234567890abcdef12345678",
     title: "季度报告"
-  }, "workspace_write", { agentWorkDir: workDir, taskDir }));
+  }, "workspace_write", {
+    agentWorkDir: workDir,
+    taskDir,
+    explicitOutputTargets: [{ path: externalDir, kind: "directory" }]
+  }));
 
   assert.equal(request.resourceKind, "artifact_publish");
-  assert.match(request.summary, /已检查候选.*受管成品区/);
+  assert.match(request.summary, /保留受管成品.*用户明确指定的位置/);
   assert.match(request.target, /已检查来源：/);
   assert.match(request.target, /→ 受管最终成品：/);
   assert.ok(request.target.includes(path.join(workDir, "report.md")));
   assert.ok(request.target.includes(path.join(taskDir, "final", "report.md")));
+  assert.ok(request.target.includes(path.join(externalDir, "report.md")));
   assert.match(request.target, /同名时创建新版本/);
   assert.match(request.boundary, /普通文件修改授权不包含生成、发布或废弃/);
 });

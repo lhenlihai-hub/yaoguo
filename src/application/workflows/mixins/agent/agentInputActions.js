@@ -68,13 +68,13 @@ async submitAgentInput(payload = {}, options = {}) {
 
 async _runAgentInputTurn(payload = {}, options = {}) {
   const {
-    message, projectId, taskId, runId, turnId, fileReferences = []
+    message, projectId, taskId, runId, turnId, fileReferences = [], explicitOutputTargets = []
   } = payload;
   let artifacts = [];
   try {
     this._emitAgentActivity?.({
       projectId, taskId, runId, turnId,
-      phase: "agent-run", status: "planning", label: "Agent 正在处理任务"
+      phase: "agent-run", status: "planning", label: "正在分析任务"
     });
     const outcome = await this.executeAgentTurn({
       message,
@@ -83,8 +83,10 @@ async _runAgentInputTurn(payload = {}, options = {}) {
       runId,
       turnId,
       fileReferences,
+      explicitOutputTargets,
       signal: options.signal || null,
       onToken: options.onToken,
+      onReasoning: options.onReasoning,
       onToolEvent: (event) => emitAgentToolActivity(this, event, {
         projectId, taskId, runId, turnId
       })
@@ -101,7 +103,7 @@ async _runAgentInputTurn(payload = {}, options = {}) {
       projectId, taskId, runId, turnId,
       phase: "agent-run",
       status: outcome.cancelled || outcome.blocked ? "blocked" : "completed",
-      label: outcome.cancelled ? "当前任务已停止" : (outcome.blocked ? "Agent 未完成" : "Agent 已完成")
+      label: outcome.cancelled ? "当前任务已停止" : (outcome.blocked ? "任务未完成" : "任务已完成")
     });
     return {
       reply,
@@ -236,6 +238,7 @@ function emitAgentToolActivity(engine, event = {}, scope = {}) {
     status: event.status === "started" ? "running" : (failed ? "blocked" : "completed"),
     label: failed ? `${labels[0].replace(/^正在/, "")}未完成` : (event.status === "started" ? labels[0] : labels[1]),
     kind: "tool",
-    toolName: event.name
+    toolName: event.name,
+    target: `${event.args?.target || ""}`
   });
 }

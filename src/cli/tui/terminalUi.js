@@ -1,15 +1,16 @@
 "use strict";
 
-const path = require("node:path");
 const { ansi, createTuiTheme, formatHeader } = require("./theme");
 
 const COMMANDS = Object.freeze([
-  { name: "model", description: "选择 Pro / Flash 或设置 API Key" },
-  { name: "usage", description: "查看当前会话 token 与缓存命中" },
-  { name: "tokens", description: "/usage 的别名" },
+  { name: "model", description: "模型、思考强度与 API Key" },
+  { name: "usage", description: "token、缓存命中与模型调用" },
+  { name: "resume", description: "打开或删除历史会话" },
+  { name: "new", description: "在当前工作空间新建会话" },
+  { name: "permissions", description: "Ask / All agree 授权模式" },
   { name: "clear", description: "清空当前屏幕，不删除会话" },
   { name: "help", description: "查看终端菜单与快捷键" },
-  { name: "exit", description: "退出腰果" }
+  { name: "quit", description: "退出腰果" }
 ]);
 
 async function createTerminalUi(options = {}) {
@@ -24,7 +25,10 @@ class YaoguoTerminalUi {
     this.terminal = options.terminal || new toolkit.ProcessTerminal();
     this.tui = new toolkit.TUI(this.terminal, true);
     this.workspacePath = `${options.workspacePath || process.cwd()}`;
+    this.taskTitle = `${options.taskTitle || "当前会话"}`;
     this.modelLabel = `${options.modelLabel || "Pro"}`;
+    this.thinkingLabel = `${options.thinkingLabel || "Max"}`;
+    this.permissionLabel = `${options.permissionLabel || "Ask"}`;
     this.keyAvailable = Boolean(options.keyAvailable);
     this.version = `${options.version || "0.0.0"}`;
     this.usageText = "";
@@ -37,6 +41,8 @@ class YaoguoTerminalUi {
     this.onSubmit = null;
     this.onInterrupt = null;
     this.resolveExit = null;
+    this.activeStream = null;
+    this.statusTimer = null;
     this.exitPromise = new Promise((resolve) => { this.resolveExit = resolve; });
     this.buildLayout();
   }
@@ -45,7 +51,7 @@ class YaoguoTerminalUi {
     const { CombinedAutocompleteProvider, Editor, Spacer, Text } = this.kit;
     this.header = new Text(formatHeader(this.version), 1, 0);
     this.sessionInfo = new Text(
-      ansi.muted(`工作空间  ${this.workspacePath}`),
+      formatSessionInfo(this.workspacePath, this.taskTitle),
       1,
       0
     );
@@ -127,6 +133,7 @@ class YaoguoTerminalUi {
 
   async dispose() {
     this.exit();
+    this.stopStatusTimer();
     await this.terminal.drainInput?.(250, 25).catch(() => {});
   }
 
@@ -164,11 +171,38 @@ class YaoguoTerminalUi {
   beginAssistant() {
     const { Container, Markdown, Text } = this.kit;
     const component = new Container();
+    const label = new Text(ansi.blueBright(ansi.bold("正在分析任务")), 1, 0);
+    const workflow = new Text("", 1, 0);
+    const reasoningTitle = new Text("", 1, 0);
+    const reasoning = new Markdown("", 1, 0, this.theme.markdown);
     const markdown = new Markdown("", 1, 0, this.theme.markdown);
-    component.addChild(new Text(ansi.blue(ansi.bold("腰果")), 1, 0));
+    component.addChild(label);
+    component.addChild(workflow);
+    component.addChild(reasoningTitle);
+    component.addChild(reasoning);
     component.addChild(markdown);
     this.insertMessage(component);
-    return { component, markdown, text: "", streamed: false };
+    const stream = {
+      component,
+      label,
+      workflow,
+      reasoningTitle,
+      reasoning,
+      markdown,
+      text: "",
+      reasoningText: "",
+      streamed: false,
+      startedAt: Date.now(),
+      thinkingStartedAt: 0,
+      thinkingEndedAt: 0,
+      thinkingDurationMs: 0,
+      thinkingSegmentStartedAt: 0,
+      activities: new Map(),
+      activityRows: [],
+      finished: false
+    };
+    this.activeStream = stream;
+    return stream;
   }
 
   appendAssistant(stream, delta) {
@@ -180,10 +214,40 @@ class YaoguoTerminalUi {
     this.tui.requestRender();
   }
 
+  appendReasoning(stream, delta, event = {}) {
+    if (!stream) return;
+    const now = Date.now();
+    if (event.phase === "complete") {
+      const measured = Math.max(0, Number(event.durationMs) || 0);
+      const fallback = stream.thinkingSegmentStartedAt ? now - stream.thinkingSegmentStartedAt : 0;
+      stream.thinkingDurationMs += measured || fallback;
+      stream.thinkingSegmentStartedAt = 0;
+      stream.thinkingEndedAt = now;
+      this.renderReasoningTitle(stream);
+      this.tui.requestRender();
+      return;
+    }
+    if (!delta) return;
+    if (!stream.thinkingStartedAt) stream.thinkingStartedAt = now;
+    if (!stream.thinkingSegmentStartedAt) stream.thinkingSegmentStartedAt = now;
+    stream.reasoningText += `${delta}`;
+    stream.reasoning.setText(stream.reasoningText);
+    this.renderReasoningTitle(stream);
+    this.startStatusTimer();
+    this.tui.requestRender();
+  }
+
   finishAssistant(stream, fallback = "") {
     if (!stream) return;
+    stream.finished = true;
+    if (stream.thinkingSegmentStartedAt) {
+      stream.thinkingDurationMs += Date.now() - stream.thinkingSegmentStartedAt;
+      stream.thinkingSegmentStartedAt = 0;
+    }
+    stream.thinkingEndedAt = stream.reasoningText ? Date.now() : 0;
     const finalText = stream.text || `${fallback || ""}`;
     stream.markdown.setText(finalText || "未生成可显示回复。");
+    this.renderReasoningTitle(stream);
     this.tui.requestRender();
   }
 
@@ -236,6 +300,20 @@ class YaoguoTerminalUi {
       this.tui.removeChild(record.component);
       this.tui.removeChild(record.spacer);
     }
+    this.activeStream = null;
+    this.tui.requestRender(true);
+  }
+
+  replaceConversationHistory(rows = []) {
+    this.clearConversation();
+    this.addConversationHistory(rows);
+  }
+
+  updateSession({ workspacePath, taskTitle } = {}) {
+    if (workspacePath) this.workspacePath = `${workspacePath}`;
+    if (taskTitle) this.taskTitle = `${taskTitle}`;
+    this.sessionInfo.setText(formatSessionInfo(this.workspacePath, this.taskTitle));
+    this.renderStatus();
     this.tui.requestRender(true);
   }
 
@@ -246,9 +324,11 @@ class YaoguoTerminalUi {
     if (this.busy) {
       this.activity = label;
       this.ensureLoader(label);
+      this.startStatusTimer();
     } else {
       this.activity = "";
       this.removeLoader();
+      this.stopStatusTimer();
     }
     this.renderStatus();
     if (!this.busy) this.tui.setFocus(this.editor);
@@ -259,6 +339,76 @@ class YaoguoTerminalUi {
     this.activity = `${label || ""}`;
     if (this.loader && this.activity) this.loader.setMessage(this.activity);
     this.renderStatus();
+  }
+
+  recordActivity(activity = {}) {
+    const stream = this.activeStream;
+    const label = `${activity.label || activity.status || ""}`.trim();
+    if (!label) return;
+    this.setActivity(label);
+    if (!stream || stream.finished) return;
+    stream.label.setText(ansi.blueBright(ansi.bold(label)));
+    const key = `${activity.phase || activity.toolName || label}`;
+    const now = Date.now();
+    const target = `${activity.target || ""}`.trim();
+    const existing = stream.activities.get(key);
+    if (["running", "planning"].includes(activity.status)) {
+      stream.activities.set(key, { label, target, startedAt: existing?.startedAt || now });
+    } else {
+      const startedAt = existing?.startedAt || now;
+      stream.activities.delete(key);
+      stream.activityRows.push({
+        label,
+        target: target || existing?.target || "",
+        status: activity.status,
+        durationMs: Math.max(0, now - startedAt)
+      });
+    }
+    this.renderWorkflow(stream);
+    this.tui.requestRender();
+  }
+
+  renderWorkflow(stream) {
+    const completed = stream.activityRows.map((row) => {
+      const icon = row.status === "blocked" ? "!" : "✓";
+      const color = row.status === "blocked" ? ansi.red : ansi.green;
+      const target = row.target ? `\n  ${ansi.muted(row.target)}` : "";
+      return `${color(icon)} ${row.label} · ${formatElapsed(row.durationMs)}${target}`;
+    });
+    const running = [...stream.activities.values()].map((row) => {
+      const target = row.target ? `\n  ${ansi.muted(row.target)}` : "";
+      return `${ansi.blueBright("↳")} ${row.label} · ${formatElapsed(Date.now() - row.startedAt)}${target}`;
+    });
+    stream.workflow.setText([...completed, ...running].join("\n"));
+  }
+
+  renderReasoningTitle(stream) {
+    if (!stream?.reasoningText) {
+      stream?.reasoningTitle?.setText("");
+      return;
+    }
+    const active = stream.thinkingSegmentStartedAt ? Date.now() - stream.thinkingSegmentStartedAt : 0;
+    const duration = Math.max(0, stream.thinkingDurationMs + active);
+    stream.reasoningTitle.setText(ansi.muted(`思考过程 · ${formatElapsed(duration)}`));
+  }
+
+  startStatusTimer() {
+    if (this.statusTimer) return;
+    this.statusTimer = setInterval(() => {
+      if (this.activeStream && !this.activeStream.finished) {
+        this.renderWorkflow(this.activeStream);
+        this.renderReasoningTitle(this.activeStream);
+      }
+      this.renderStatus();
+      this.tui.requestRender();
+    }, 250);
+    this.statusTimer.unref?.();
+  }
+
+  stopStatusTimer() {
+    if (!this.statusTimer) return;
+    clearInterval(this.statusTimer);
+    this.statusTimer = null;
   }
 
   ensureLoader(label) {
@@ -285,9 +435,15 @@ class YaoguoTerminalUi {
     this.tui.requestRender();
   }
 
-  updateModel({ modelLabel, available } = {}) {
+  updateModel({ modelLabel, thinkingLabel, available } = {}) {
     if (modelLabel) this.modelLabel = `${modelLabel}`;
+    if (thinkingLabel) this.thinkingLabel = `${thinkingLabel}`;
     if (available !== undefined) this.keyAvailable = Boolean(available);
+    this.renderStatus();
+  }
+
+  updatePermissionMode(label = "Ask") {
+    this.permissionLabel = `${label || "Ask"}`;
     this.renderStatus();
   }
 
@@ -297,14 +453,20 @@ class YaoguoTerminalUi {
   }
 
   renderStatus() {
-    const workspace = path.basename(this.workspacePath) || this.workspacePath;
+    const workspace = this.workspacePath;
     const key = this.keyAvailable ? ansi.green("Key ✓") : ansi.yellow("Key —");
+    const permission = this.permissionLabel === "All agree"
+      ? ansi.yellow("All agree")
+      : ansi.muted("Ask");
+    const elapsed = this.busy && this.activeStream
+      ? ` · ${formatElapsed(Date.now() - this.activeStream.startedAt)}`
+      : "";
     const state = this.busy
-      ? ansi.blueBright(this.activity || "正在运行")
+      ? ansi.blueBright(`${this.activity || "正在运行"}${elapsed}`)
       : ansi.muted("Enter 发送 · Shift+Enter 换行 · / 菜单");
     const usage = this.usageText ? `  ${ansi.muted(this.usageText)}` : "";
     this.status.setText(
-      `${ansi.muted(workspace)}  ${ansi.blueBright(this.modelLabel)}  ${key}${usage}  ${state}`
+      `${ansi.muted(workspace)}  ${ansi.blueBright(this.modelLabel)}  ${ansi.muted(this.thinkingLabel)}  ${key}  ${permission}${usage}  ${state}`
     );
     this.tui.requestRender();
   }
@@ -374,6 +536,16 @@ class YaoguoTerminalUi {
       this.tui.requestRender();
     });
   }
+}
+
+function formatSessionInfo(workspacePath, taskTitle) {
+  return ansi.muted(`工作空间  ${workspacePath}\n会话      ${taskTitle}`);
+}
+
+function formatElapsed(durationMs) {
+  const seconds = Math.max(0, Number(durationMs) || 0) / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
 }
 
 function interactiveContainer(box, input, focusable = false) {

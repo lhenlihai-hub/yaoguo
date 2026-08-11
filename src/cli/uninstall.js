@@ -144,6 +144,50 @@ async function archivePublishedArtifacts(runtimeRoot, artifactRoot, clock) {
   return { count: artifacts.length, bytes, directory: archiveRoot };
 }
 
+async function archiveTaskPublishedArtifacts({
+  taskDir = "", artifactRoot = "", projectId = "project", taskId = "task", clock = () => new Date()
+} = {}) {
+  const requestedTaskDir = `${taskDir || ""}`.trim();
+  const requestedArtifactRoot = `${artifactRoot || ""}`.trim();
+  if (!requestedTaskDir || !requestedArtifactRoot) throw new Error("归档任务缺少受管路径。");
+  const taskRoot = await fsp.realpath(path.resolve(requestedTaskDir));
+  const finalRoot = path.join(taskRoot, "final");
+  const finalStat = await fsp.lstat(finalRoot).catch(() => null);
+  if (!finalStat?.isDirectory() || finalStat.isSymbolicLink()) {
+    return { count: 0, bytes: 0, directory: "" };
+  }
+  const entries = (await fsp.readdir(finalRoot, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && !entry.isSymbolicLink() && !isInternalPublishedMetadata(entry.name));
+  if (!entries.length) return { count: 0, bytes: 0, directory: "" };
+  await requireSafeArtifactDirectory(requestedArtifactRoot);
+  const archiveRoot = await reserveArchiveDirectory(
+    path.resolve(requestedArtifactRoot),
+    `deleted-${archiveLabel(clock)}`
+  );
+  const destinationDir = path.join(
+    archiveRoot,
+    safeArchiveSegment(projectId, "project"),
+    safeArchiveSegment(taskId, "task")
+  );
+  await fsp.mkdir(destinationDir, { recursive: true });
+  let bytes = 0;
+  for (const entry of entries) {
+    const source = path.join(finalRoot, entry.name);
+    const destination = path.join(destinationDir, entry.name);
+    await fsp.copyFile(source, destination, fsConstants.COPYFILE_EXCL);
+    const stat = await fsp.stat(source);
+    await fsp.chmod(destination, stat.mode & 0o777);
+    bytes += stat.size;
+  }
+  return { count: entries.length, bytes, directory: archiveRoot };
+}
+
+function safeArchiveSegment(value, fallback) {
+  const normalized = `${value || ""}`.trim().replace(/[^a-zA-Z0-9._-]+/g, "-");
+  const segment = normalized.slice(0, 120);
+  return !segment || [".", ".."].includes(segment) ? fallback : segment;
+}
+
 async function removeOwnedCommandLinks(manifest, homeDirectory) {
   const allowedDirectory = path.join(homeDirectory, ".local", "bin");
   const expectedTargets = new Set([
@@ -265,6 +309,7 @@ module.exports = {
   validateInstallManifest,
   collectPublishedArtifacts,
   archivePublishedArtifacts,
+  archiveTaskPublishedArtifacts,
   stripManagedProfileBlock,
   runUninstall
 };

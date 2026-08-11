@@ -53,6 +53,7 @@ class AiRouter {
     jsonMode = false,
     responseFormat = null,
     onToken = null,
+    onReasoning = null,
     tools = null,
     toolChoice = null,
     onToolCalls = null,
@@ -90,7 +91,7 @@ class AiRouter {
       const propagated = {
         taskType, title, instruction, input, runContext, contextProfile, contextBudget,
         contentFilterSafe, jsonMode, responseFormat,
-        onToken, tools, toolChoice, onToolCalls, signal: effectiveSignal,
+        onToken, onReasoning, tools, toolChoice, onToolCalls, signal: effectiveSignal,
         pinnedSections, instructionReminder, instructionMemorySummary,
         memoryCacheScope,
         internalCall, projectId, taskId, runId, stepId,
@@ -100,6 +101,9 @@ class AiRouter {
       const effectiveOnToken = this.resolveEffectiveOnToken({ jsonMode, responseFormat, onToken });
       const tokenHandler = effectiveOnToken
         ? (delta) => { streamedAnyToken = true; effectiveOnToken(delta); }
+        : null;
+      const reasoningHandler = typeof onReasoning === "function"
+        ? (delta, event) => { if (delta) streamedAnyToken = true; onReasoning(delta, event); }
         : null;
       const callTimeoutMs = this.resolveCallTimeoutMs({ jsonMode, responseFormat });
       const modelMaxTokens = resolveMaxTokens({ model, providerOverride: provider.maxTokens });
@@ -125,7 +129,7 @@ class AiRouter {
         instructionMemorySummary
       }, request);
       setup = { settings, provider, model, effectiveSignal, retry, propagated,
-        tokenHandler, callTimeoutMs, callMaxTokens, deepseekPolicy, request, startedAt, call };
+        tokenHandler, reasoningHandler, callTimeoutMs, callMaxTokens, deepseekPolicy, request, startedAt, call };
     } catch (error) {
       await this.logCall({
         id: crypto.randomUUID(), createdAt: setupStartedAt.toISOString(), taskType, title,
@@ -136,12 +140,13 @@ class AiRouter {
       throw error;
     }
     const { settings, provider, model, effectiveSignal, retry, propagated,
-      tokenHandler, callTimeoutMs, callMaxTokens, deepseekPolicy, request, startedAt, call } = setup;
+      tokenHandler, reasoningHandler, callTimeoutMs, callMaxTokens, deepseekPolicy, request, startedAt, call } = setup;
     try {
       const response = await this.completeDetailed(provider, model, request.messages, {
         jsonMode,
         responseFormat,
         onToken: tokenHandler,
+        onReasoning: reasoningHandler,
         tools: Array.isArray(tools) && tools.length ? tools : undefined,
         toolChoice: toolChoice || undefined,
         onToolCalls: typeof onToolCalls === "function" ? onToolCalls : undefined,
@@ -217,6 +222,7 @@ class AiRouter {
     tools = [],
     toolChoice = null,
     onToken = null,
+    onReasoning = null,
     signal = null,
     executionBudget = null,
     providerAttemptPreclaimed = false,
@@ -262,6 +268,9 @@ class AiRouter {
     const tokenHandler = typeof onToken === "function"
       ? (delta) => { streamedAnyToken = true; onToken(delta); }
       : null;
+    const reasoningHandler = typeof onReasoning === "function"
+      ? (delta, event) => { if (delta) streamedAnyToken = true; onReasoning(delta, event); }
+      : null;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const startedAt = new Date();
       const call = {
@@ -289,6 +298,7 @@ class AiRouter {
         if (attempt > 0) this.claimProviderAttempt(executionBudget, false);
         const response = await this.completeDetailed(provider, model, messages, {
           onToken: tokenHandler,
+          onReasoning: reasoningHandler,
           tools: Array.isArray(tools) && tools.length ? tools : undefined,
           toolChoice: toolChoice || undefined,
           signal: effectiveSignal || undefined,
