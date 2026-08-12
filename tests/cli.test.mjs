@@ -77,7 +77,7 @@ test("CLI 格式化本轮 token、推理与缓存命中，并识别内置统计�
   assert.equal(isUsageCommand(" /usage "), true);
   assert.equal(isUsageCommand("/tokens"), true);
   assert.equal(isUsageCommand("usage"), false);
-  assert.equal(formatTuiUsage(usage), "↑12k ↓678 C75% W12%");
+  assert.equal(formatTuiUsage(usage), "缓存 75% · 上下文 12%");
   const sessionUsageWithBackground = {
     ...usage,
     modelCalls: 5,
@@ -92,7 +92,7 @@ test("CLI 格式化本轮 token、推理与缓存命中，并识别内置统计�
     formatUsage(sessionUsageWithBackground, { label: "会话累计" }),
     "会话累计 5 次模型调用 · 输入 12,345 · 输出 678 · 推理 120 · 前台缓存 75%（9,000/12,000） · 上下文 12%（120k/1.0m） · 后台 2 次，缓存 10%"
   );
-  assert.equal(formatTuiUsage(sessionUsageWithBackground), "↑12k ↓678 C75% W12%");
+  assert.equal(formatTuiUsage(sessionUsageWithBackground), "缓存 75% · 上下文 12%");
   assert.deepEqual(await sessionUsage({
     platformKernel: {
       tokenLedger: {
@@ -360,7 +360,7 @@ test("CLI /resume 可打开历史会话并恢复对话与 usage", async () => {
   assert.equal(session.task.id, "t2");
   assert.deepEqual(events[0], ["session", { workspacePath: "/tmp/work", taskTitle: "历史会话" }]);
   assert.deepEqual(events[1], ["history", [{ role: "user", content: "历史问题" }]]);
-  assert.deepEqual(events[2], ["usage", "↑1.2k ↓80 C— W—"]);
+  assert.deepEqual(events[2], ["usage", "缓存 — · 上下文 —"]);
 });
 
 test("CLI /resume 用首条用户消息修复旧默认会话名", async () => {
@@ -422,7 +422,7 @@ test("CLI /resume 只删除选中会话数据，不改变当前工作空间", as
   await runResumeMenu(services, terminal, session);
   assert.deepEqual(deleted, [["terminal", "old"]]);
   assert.equal(session.task.id, "current");
-  assert.match(notices[0], /已删除会话/);
+  assert.match(notices[0], /已删除任务/);
 });
 
 test("CLI /new 创建并切换到真实的新会话", async () => {
@@ -461,7 +461,67 @@ test("CLI /new 创建并切换到真实的新会话", async () => {
     "session", { workspacePath: "/tmp/work", taskTitle: "新任务" }
   ]);
   assert.deepEqual(events.find((event) => event[0] === "history"), ["history", []]);
-  assert.deepEqual(events.at(-1), ["success", "已创建新会话。"]);
+  assert.deepEqual(events.at(-1), ["success", "已创建新任务。"]);
+});
+
+test("CLI /new 重复执行时复用唯一空任务", async () => {
+  const blank = { id: "blank", title: "新任务", workspacePath: "/tmp/work" };
+  let createCalls = 0;
+  const services = {
+    projectService: {
+      async listTasks() { return [blank]; },
+      async isBlankTask(_projectId, task) { return task.id === blank.id; },
+      async createTask() { createCalls += 1; throw new Error("不应创建第二个空任务"); }
+    }
+  };
+  const notices = [];
+  const terminal = { ui: { addSuccess(message) { notices.push(message); } } };
+  const session = {
+    project: { id: "terminal" },
+    task: blank,
+    workspacePath: "/tmp/work"
+  };
+  await createNewSession(services, terminal, session);
+  await createNewSession(services, terminal, session);
+  assert.equal(createCalls, 0);
+  assert.deepEqual(notices, ["当前已是空白新任务。", "当前已是空白新任务。"]);
+});
+
+test("CLI 删除当前任务时复用已有空任务并清理重复空记录", async () => {
+  const current = { id: "current", title: "正在删除", workspacePath: "/tmp/work" };
+  const firstBlank = { id: "blank-new", title: "新任务", workspacePath: "/tmp/work" };
+  const secondBlank = { id: "blank-old", title: "新任务", workspacePath: "/tmp/work" };
+  const tasks = [current, firstBlank, secondBlank];
+  const choices = ["current", "delete", "delete"];
+  const deleted = [];
+  let createCalls = 0;
+  const services = {
+    projectService: {
+      async listTasks() { return tasks.filter((task) => !deleted.includes(task.id)); },
+      async isBlankTask(_projectId, task) { return task.id.startsWith("blank-"); },
+      async deleteTask(_projectId, taskId) { deleted.push(taskId); },
+      async createTask() { createCalls += 1; throw new Error("不应新增空任务"); },
+      async resolveTaskWorkspace(_projectId, taskId) {
+        const task = tasks.find((item) => item.id === taskId);
+        return { task, workspacePath: task.workspacePath };
+      }
+    }
+  };
+  const successes = [];
+  const terminal = {
+    ui: {
+      async choose() { return choices.shift(); },
+      updateSession() {},
+      replaceConversationHistory() {},
+      addSuccess(message) { successes.push(message); }
+    }
+  };
+  const session = { project: { id: "terminal" }, task: current, workspacePath: "/tmp/work" };
+  await runResumeMenu(services, terminal, session);
+  assert.equal(createCalls, 0);
+  assert.equal(session.task.id, "blank-new");
+  assert.deepEqual(deleted, ["current", "blank-old"]);
+  assert.match(successes[0], /已删除任务/);
 });
 
 test("CLI 从自然语言中确认用户明确指定的输出目录", async () => {
@@ -551,7 +611,7 @@ test("CLI TUI 将模型 token 流、成品与 usage 交给同一对话界面", a
     "delta:完成。",
     "finish:已经完成。",
     "artifact:/tmp/work/report.md",
-    "usage:↑2.0k ↓120 C75% W—"
+    "usage:缓存 75% · 上下文 —"
   ]);
 });
 
@@ -626,6 +686,79 @@ test("CLI 首次按 canonical 工作空间创建稳定新任务，已有任务�
     assert.equal(second.task.title, "新任务");
     assert.equal(second.workspacePath, canonical);
     assert.equal(tasks.size, 2);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("CLI 启动时清理同一工作空间的重复空任务", async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), "yaoguo-cli-deduplicate-"));
+  const canonical = await realpath(workspace);
+  const project = { id: "terminal", name: "终端工作区" };
+  const tasks = [
+    { id: "blank-new", projectId: "terminal", title: "新任务", workspacePath: canonical },
+    {
+      id: "blank-old",
+      projectId: "terminal",
+      title: `${path.basename(canonical)} · 新会话`,
+      workspacePath: canonical
+    }
+  ];
+  const deleted = [];
+  const projectService = {
+    async getProject() { return project; },
+    async listTasks() { return tasks.filter((task) => !deleted.includes(task.id)); },
+    async isBlankTask(_projectId, task) { return task.title === "新任务"; },
+    async deleteTask(_projectId, taskId) { deleted.push(taskId); },
+    async getTask(_projectId, taskId) {
+      return tasks.find((task) => task.id === taskId && !deleted.includes(task.id)) || null;
+    },
+    async resolveTaskWorkspace(_projectId, taskId) {
+      const task = tasks.find((item) => item.id === taskId);
+      return { task, workspacePath: canonical };
+    }
+  };
+  try {
+    const session = await resolveSession({ projectService }, { workspace });
+    assert.equal(session.task.id, "blank-new");
+    assert.deepEqual(deleted, ["blank-old"]);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("CLI 启动时移除其他工作空间遗留的空任务", async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), "yaoguo-cli-cross-workspace-"));
+  const canonical = await realpath(workspace);
+  const project = { id: "terminal", name: "终端工作区" };
+  const stale = { id: "stale", projectId: "terminal", title: "新任务", workspacePath: "/tmp/old-work" };
+  const tasks = [stale];
+  const deleted = [];
+  const created = [];
+  const projectService = {
+    async getProject() { return project; },
+    async listTasks() { return tasks.filter((task) => !deleted.includes(task.id)); },
+    async isBlankTask(_projectId, task) { return task.title === "新任务"; },
+    async deleteTask(_projectId, taskId) { deleted.push(taskId); },
+    async getTask(_projectId, taskId) {
+      return created.find((task) => task.id === taskId) || null;
+    },
+    async createTask(projectId, payload) {
+      const task = { ...payload, projectId, workspacePath: "" };
+      created.push(task);
+      return task;
+    },
+    async bindTaskWorkspace(_projectId, taskId, workspacePath) {
+      const task = created.find((item) => item.id === taskId);
+      task.workspacePath = workspacePath;
+      return task;
+    }
+  };
+  try {
+    const session = await resolveSession({ projectService }, { workspace });
+    assert.deepEqual(deleted, ["stale"]);
+    assert.equal(created.length, 1);
+    assert.equal(session.task.workspacePath, canonical);
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }

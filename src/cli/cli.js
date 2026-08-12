@@ -556,12 +556,17 @@ async function resolveSession(services, options = {}, runtime = {}) {
   const existingTasks = typeof services.projectService.listTasks === "function"
     ? await services.projectService.listTasks(project.id)
     : [];
-  const reusableBlank = options.taskId || options.newSession
+  const reusableBlank = options.taskId
     ? null
-    : await findReusableWorkspaceTask(services.projectService, project.id, existingTasks, workspacePath);
+    : await retainSingleWorkspaceBlankTask(
+      services.projectService,
+      project.id,
+      existingTasks,
+      workspacePath
+    );
   const taskId = options.taskId
     || reusableBlank?.id
-    || (!options.newSession && !existingTasks.some((candidate) => candidate.id === stableTaskId)
+    || (!existingTasks.some((candidate) => candidate.id === stableTaskId)
       ? stableTaskId
       : `session-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`);
   let task = await services.projectService.getTask(project.id, taskId, false);
@@ -583,19 +588,51 @@ async function resolveSession(services, options = {}, runtime = {}) {
   return { project, task, ...workspaceSelection };
 }
 
-async function findReusableWorkspaceTask(projectService, projectId, tasks, workspacePath) {
+async function findBlankTasks(projectService, projectId, tasks) {
+  const candidates = [];
   for (const task of Array.isArray(tasks) ? tasks : []) {
-    if (`${task.workspacePath || ""}` && path.resolve(task.workspacePath) !== workspacePath) continue;
     if (typeof projectService.isBlankTask === "function") {
-      if (await projectService.isBlankTask(projectId, task).catch(() => false)) return task;
+      let blank = await projectService.isBlankTask(projectId, task).catch(() => false);
+      if (!blank && isTerminalPlaceholderTaskTitle(task)) {
+        blank = await projectService.isBlankTask(projectId, { ...task, title: "新任务" }).catch(() => false);
+      }
+      if (blank) candidates.push(task);
       continue;
     }
-    if (isAutoTaskTitle(task.title) && !task.lastRunId && !task.lastArtifact && !task.lastRunAt) return task;
+    if (
+      (isAutoTaskTitle(task.title) || isTerminalPlaceholderTaskTitle(task))
+      && !task.lastRunId
+      && !task.lastArtifact
+      && !task.lastRunAt
+    ) {
+      candidates.push(task);
+    }
   }
-  return null;
+  return candidates;
 }
 
-async function activateSession(services, terminal, session, selectedTask) {
+async function retainSingleWorkspaceBlankTask(
+  projectService,
+  projectId,
+  tasks,
+  workspacePath,
+  preferredTaskId = ""
+) {
+  const candidates = await findBlankTasks(projectService, projectId, tasks);
+  if (!candidates.length) return null;
+  const reusable = candidates.filter((task) => (
+    !`${task.workspacePath || ""}` || path.resolve(task.workspacePath) === workspacePath
+  ));
+  const keep = reusable.find((task) => task.id === preferredTaskId) || reusable[0] || null;
+  if (typeof projectService.deleteTask === "function") {
+    for (const task of candidates) {
+      if (task.id !== keep?.id) await projectService.deleteTask(projectId, task.id);
+    }
+  }
+  return keep;
+}
+
+async function activateSession(services, terminal, session, selectedTask, options = {}) {
   let task = selectedTask;
   let workspacePath = `${task?.workspacePath || session.workspacePath || ""}`;
   if (task?.workspacePath) {
@@ -613,18 +650,33 @@ async function activateSession(services, terminal, session, selectedTask) {
     terminal.ui.replaceConversationHistory(await loadTerminalHistory(services, session));
     const usage = await sessionUsage(services, session).catch(() => null);
     if (usage) terminal.ui.setUsageText(formatTuiUsage(usage));
-    terminal.ui.addNotice(`已打开会话：${task.title || task.id}\n${workspacePath}`);
+    if (options.announce !== false) terminal.ui.addNotice(`已打开任务：${task.title || task.id}`);
   }
   return session;
 }
 
-async function createNewSession(services, terminal, session) {
-  const task = await services.projectService.createTask(session.project.id, {
-    id: `session-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
-    title: "新任务"
-  });
-  await activateSession(services, terminal, session, task);
-  terminal.ui?.addSuccess("已创建新会话。");
+async function createNewSession(services, terminal, session, options = {}) {
+  const tasks = typeof services.projectService.listTasks === "function"
+    ? await services.projectService.listTasks(session.project.id)
+    : [];
+  let task = await retainSingleWorkspaceBlankTask(
+    services.projectService,
+    session.project.id,
+    tasks,
+    session.workspacePath
+  );
+  const reused = Boolean(task);
+  if (!task) {
+    task = await services.projectService.createTask(session.project.id, {
+      id: `session-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
+      title: "新任务"
+    });
+  }
+  const alreadyActive = task.id === session.task?.id;
+  if (!alreadyActive) await activateSession(services, terminal, session, task, { announce: false });
+  const message = options.successMessage
+    || (alreadyActive ? "当前已是空白新任务。" : (reused ? "已切换到空白新任务。" : "已创建新任务。"));
+  terminal.ui?.addSuccess(message);
   return session;
 }
 
@@ -680,10 +732,12 @@ async function runResumeMenu(services, terminal, session) {
   const archived = await preserveTaskArtifacts(services, session.project.id, task.id);
   await services.projectService.deleteTask(session.project.id, task.id);
   if (deletingCurrent) {
-    await createNewSession(services, terminal, session);
+    await createNewSession(services, terminal, session, {
+      successMessage: `已删除任务：${task.title || task.id}`
+    });
     if (archived.count) terminal.ui.addSuccess(`已保留 ${archived.count} 个成品：${archived.directory}`);
   } else terminal.ui.addSuccess([
-    `已删除会话：${task.title || task.id}`,
+    `已删除任务：${task.title || task.id}`,
     archived.count ? `已保留 ${archived.count} 个成品：${archived.directory}` : ""
   ].filter(Boolean).join("\n"));
   return session;
@@ -835,7 +889,7 @@ function formatTuiUsage(usage = {}) {
   const miss = Math.max(0, Number(cacheUsage.cacheMissTokens) || 0);
   const total = hit + miss;
   const cache = total > 0 ? `${Math.round((hit / total) * 100)}%` : "—";
-  return `↑${formatTuiCount(usage.promptTokens)} ↓${formatTuiCount(usage.completionTokens)} C${cache} W${formatContextUsage(usage, false)}`;
+  return `缓存 ${cache} · 上下文 ${formatContextUsage(usage, false)}`;
 }
 
 function formatContextUsage(usage = {}, verbose = true) {
@@ -1126,7 +1180,6 @@ async function runInteractiveTui(services, terminal, session, env = process.env)
   const history = await loadTerminalHistory(services, session);
   ui.addConversationHistory(history);
   if (history.length) ui.addNotice(`已恢复 ${history.length} 条会话记录。`);
-  else ui.addNotice("输入消息开始对话；输入 / 打开命令菜单。");
   if (!initialModel.available) ui.addNotice("尚未配置 API Key，请通过 /model 完成设置。");
   ui.start({
     onSubmit: (message) => handleTuiSubmission(services, terminal, session, message, env),

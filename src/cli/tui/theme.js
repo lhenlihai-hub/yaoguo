@@ -69,15 +69,14 @@ function createTuiTheme() {
 
 function formatHeader(version) {
   const cashews = [
-    "  ╭──╮    ╭──╮    ╭──╮",
-    " ╭╯  ╰╮  ╭╯  ╰╮  ╭╯  ╰╮",
-    " ╰╮ ╭─╯  ╰╮ ╭─╯  ╰╮ ╭─╯",
-    "  ╰─╯      ╰─╯      ╰─╯"
+    "  ▄██▄",
+    " █████▀",
+    "  ▀██▄"
   ].map((line) => ansi.blue(line));
   return [
     ansi.blueBright(ansi.bold("欢迎使用腰果")),
     ...cashews,
-    ansi.muted(`v${version} · DeepSeek only · / 打开命令菜单`)
+    ansi.muted(`v${version}`)
   ].join("\n");
 }
 

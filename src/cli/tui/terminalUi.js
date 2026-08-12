@@ -35,8 +35,8 @@ class YaoguoTerminalUi {
     this.usageText = "";
     this.activity = "";
     this.busy = false;
+    this.taskStartedAt = 0;
     this.stopped = false;
-    this.loader = null;
     this.messageRecords = [];
     this.modalCancels = new Set();
     this.onSubmit = null;
@@ -64,10 +64,12 @@ class YaoguoTerminalUi {
       COMMANDS,
       this.workspacePath
     ));
-    this.status = new Text("", 1, 0);
+    this.taskStatus = new Text("", 1, 0);
+    this.status = createSplitStatusLine(this.kit);
     this.tui.addChild(this.header);
     this.tui.addChild(this.sessionInfo);
     this.tui.addChild(new Spacer(1));
+    this.tui.addChild(this.taskStatus);
     this.tui.addChild(this.editor);
     this.tui.addChild(this.status);
     this.tui.setFocus(this.editor);
@@ -124,7 +126,6 @@ class YaoguoTerminalUi {
   exit() {
     if (this.stopped) return;
     this.stopped = true;
-    this.removeLoader();
     for (const cancel of this.modalCancels) cancel();
     this.modalCancels.clear();
     this.removeGlobalInput?.();
@@ -172,7 +173,6 @@ class YaoguoTerminalUi {
   beginAssistant() {
     const { Container, Markdown, Text } = this.kit;
     const component = new Container();
-    const label = new Text(ansi.blueBright(ansi.bold("正在分析任务")), 1, 0);
     const workflow = new Text("", 1, 0);
     const reasoningTitle = new Text("", 1, 0);
     const reasoning = new Markdown(
@@ -183,7 +183,6 @@ class YaoguoTerminalUi {
       this.theme.reasoningText
     );
     const markdown = new Markdown("", 1, 0, this.theme.markdown);
-    component.addChild(label);
     component.addChild(workflow);
     component.addChild(reasoningTitle);
     component.addChild(reasoning);
@@ -191,7 +190,6 @@ class YaoguoTerminalUi {
     this.insertMessage(component);
     const stream = {
       component,
-      label,
       workflow,
       reasoningTitle,
       reasoning,
@@ -217,7 +215,6 @@ class YaoguoTerminalUi {
     stream.streamed = true;
     stream.text += `${delta}`;
     stream.markdown.setText(stream.text);
-    this.removeLoader();
     this.tui.requestRender();
   }
 
@@ -287,7 +284,7 @@ class YaoguoTerminalUi {
 
   insertMessage(component) {
     const spacer = new this.kit.Spacer(1);
-    const index = Math.max(0, this.tui.children.indexOf(this.editor));
+    const index = Math.max(0, this.tui.children.indexOf(this.taskStatus));
     this.tui.children.splice(index, 0, spacer, component);
     this.messageRecords.push({ component, spacer });
     this.tui.requestRender();
@@ -325,16 +322,17 @@ class YaoguoTerminalUi {
   }
 
   setBusy(value, label = "正在思考…") {
+    const wasBusy = this.busy;
     this.busy = Boolean(value);
     this.editor.disableSubmit = this.busy;
     this.terminal.setProgress?.(this.busy);
     if (this.busy) {
+      if (!wasBusy) this.taskStartedAt = Date.now();
       this.activity = label;
-      this.ensureLoader(label);
       this.startStatusTimer();
     } else {
       this.activity = "";
-      this.removeLoader();
+      this.taskStartedAt = 0;
       this.stopStatusTimer();
     }
     this.renderStatus();
@@ -344,7 +342,6 @@ class YaoguoTerminalUi {
 
   setActivity(label = "") {
     this.activity = `${label || ""}`;
-    if (this.loader && this.activity) this.loader.setMessage(this.activity);
     this.renderStatus();
   }
 
@@ -413,31 +410,6 @@ class YaoguoTerminalUi {
     this.statusTimer = null;
   }
 
-  ensureLoader(label) {
-    if (this.loader) {
-      this.loader.setMessage(label);
-      return;
-    }
-    this.loader = new this.kit.Loader(
-      this.tui,
-      (text) => ansi.blueBright(text),
-      (text) => ansi.muted(text),
-      label,
-      { frames: ["◆"], intervalMs: 1000 }
-    );
-    const index = Math.max(0, this.tui.children.indexOf(this.editor));
-    this.tui.children.splice(index, 0, this.loader);
-    this.loader.start();
-  }
-
-  removeLoader() {
-    if (!this.loader) return;
-    this.loader.stop();
-    this.tui.removeChild(this.loader);
-    this.loader = null;
-    this.tui.requestRender();
-  }
-
   updateModel({ modelLabel, thinkingLabel, available } = {}) {
     if (modelLabel) this.modelLabel = `${modelLabel}`;
     if (thinkingLabel) this.thinkingLabel = `${thinkingLabel}`;
@@ -456,21 +428,21 @@ class YaoguoTerminalUi {
   }
 
   renderStatus() {
-    const workspace = this.workspacePath;
-    const key = this.keyAvailable ? ansi.green("Key ✓") : ansi.yellow("Key —");
     const permission = this.permissionLabel === "All agree"
       ? ansi.yellow("All agree")
       : ansi.muted("Ask");
-    const elapsed = this.busy && this.activeStream
-      ? ` · ${formatElapsed(Date.now() - this.activeStream.startedAt)}`
-      : "";
-    const state = this.busy
-      ? ansi.blueBright(`${this.activity || "正在运行"}${elapsed}`)
-      : ansi.muted("Enter 发送 · Shift+Enter 换行 · / 菜单");
-    const usage = this.usageText ? `  ${ansi.muted(this.usageText)}` : "";
-    this.status.setText(
-      `${ansi.muted(workspace)}  ${ansi.blueBright(this.modelLabel)}  ${ansi.muted(this.thinkingLabel)}  ${key}  ${permission}${usage}  ${state}`
-    );
+    const usage = this.usageText || "缓存 — · 上下文 —";
+    const left = [
+      permission,
+      ansi.blueBright(this.modelLabel),
+      ansi.muted(this.thinkingLabel),
+      ansi.muted(usage)
+    ].join(ansi.muted(" · "));
+    const taskState = this.busy
+      ? `${this.activity || "正在运行"} · ${formatElapsed(Date.now() - this.taskStartedAt)}`
+      : "就绪";
+    this.taskStatus.setText(this.busy ? ansi.blueBright(taskState) : ansi.muted(taskState));
+    this.status.setParts(left, ansi.muted("/菜单"));
     this.tui.requestRender();
   }
 
@@ -542,7 +514,29 @@ class YaoguoTerminalUi {
 }
 
 function formatSessionInfo(workspacePath, taskTitle) {
-  return ansi.muted(`工作空间  ${workspacePath}\n会话      ${taskTitle}`);
+  return ansi.muted(`工作空间  ${workspacePath}\n任务      ${taskTitle}`);
+}
+
+function createSplitStatusLine(kit) {
+  let left = "";
+  let right = "";
+  return {
+    setParts(nextLeft = "", nextRight = "") {
+      left = `${nextLeft || ""}`;
+      right = `${nextRight || ""}`;
+    },
+    invalidate() {},
+    render(width) {
+      const lineWidth = Math.max(1, Number(width) || 1);
+      const innerWidth = Math.max(1, lineWidth - 2);
+      const rightText = kit.truncateToWidth(right, innerWidth, "");
+      const rightWidth = kit.visibleWidth(rightText);
+      const leftWidth = Math.max(0, innerWidth - rightWidth - (rightWidth ? 1 : 0));
+      const leftText = leftWidth ? kit.truncateToWidth(left, leftWidth, "") : "";
+      const gap = Math.max(0, innerWidth - kit.visibleWidth(leftText) - rightWidth);
+      return [` ${leftText}${" ".repeat(gap)}${rightText} `];
+    }
+  };
 }
 
 function formatElapsed(durationMs) {

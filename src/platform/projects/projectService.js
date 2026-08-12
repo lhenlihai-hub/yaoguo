@@ -226,7 +226,18 @@ class ProjectService {
     if (await this.hasTaskSessionEntries(projectId, task.id, task.createdAt)) return false;
     const taskDir = this.getTaskDir(projectId, task.id);
     if (await exists(path.join(taskDir, "memory"))) return false;
-    for (const dirName of ["runs", "final", "drafts", "sources", "assets"]) {
+    for (const dirName of [
+      "runs",
+      "final",
+      "drafts",
+      "sources",
+      "assets",
+      ".candidates",
+      "agent-state",
+      "agent-traces",
+      "context-results",
+      "inspection-snapshots"
+    ]) {
       const dir = path.join(taskDir, dirName);
       if (!(await exists(dir))) continue;
       const entries = await fsp.readdir(dir).catch(() => []);

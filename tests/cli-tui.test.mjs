@@ -57,6 +57,8 @@ test("TUI 提供欢迎页、真实输入框、整合菜单与无底色蓝色用�
   const output = terminal.text();
   assert.match(output, /欢迎使用腰果/);
   assert.doesNotMatch(output, /基于 Pi/);
+  assert.doesNotMatch(output, /DeepSeek only/);
+  assert.doesNotMatch(output, /打开命令菜单/);
   assert.match(output, /请继续完成项目/);
   assert.match(output, /已经开始处理/);
   assert.match(output, /model/);
@@ -112,6 +114,11 @@ test("TUI 展示真实推理耗时、工作流程与完整路径", async () => {
   assert.match(output, /\u001b\[38;2;139;153;173m/);
   assert.match(output, /\u001b\[3m/);
   assert.match(output, /All agree/);
+  assert.match(output, /就绪/);
+  const footer = ui.status.render(92).join("\n");
+  assert.match(footer, /All agree.*Pro.*High/);
+  assert.match(footer, /\/菜单/);
+  assert.doesNotMatch(footer, /\/tmp\/Yaoguo Workspace|Key|Enter|Shift\+Enter/);
   await ui.dispose();
 });
 
@@ -127,7 +134,7 @@ test("TUI 长推理过程不用高频动画或计时触发整屏重绘", async (
   const redrawsAfterContent = ui.tui.fullRedraws;
   await new Promise((resolve) => setTimeout(resolve, 1100));
 
-  assert.equal(ui.loader.intervalId, null, "运行指示为静态帧，不应创建 80ms 动画定时器");
+  assert.equal(ui.loader, undefined, "任务状态行不应再创建独立加载器");
   assert.equal(ui.tui.fullRedraws, redrawsAfterContent, "底部秒级状态刷新不应重画屏幕上方的长内容");
 
   ui.appendReasoning(stream, "", { phase: "complete", durationMs: 1250 });
