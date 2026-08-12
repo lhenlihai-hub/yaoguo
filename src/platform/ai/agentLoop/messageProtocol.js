@@ -12,18 +12,25 @@ function emptyUsage() {
   };
 }
 
-function normalizeUsage(usage = null) {
+function normalizeUsage(usage = null, contextWindow = 0) {
   const input = Number(usage?.promptTokens) || 0;
   const output = Number(usage?.completionTokens) || 0;
   const cacheRead = Number(usage?.cacheHitTokens) || 0;
   const cacheWrite = Number(usage?.cacheMissTokens) || 0;
+  const contextTokens = input + output;
+  const contextWindowTokens = Math.max(0, Number(contextWindow) || 0);
   return {
     input,
     output,
     cacheRead,
     cacheWrite,
     ...(Number.isFinite(usage?.reasoningTokens) ? { reasoning: Number(usage.reasoningTokens) } : {}),
-    totalTokens: Number(usage?.totalTokens) || input + output,
+    totalTokens: Number(usage?.totalTokens) || contextTokens,
+    contextTokens,
+    contextWindowTokens,
+    contextUsageRatio: contextWindowTokens > 0
+      ? Number((contextTokens / contextWindowTokens).toFixed(6))
+      : 0,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
   };
 }
@@ -37,7 +44,10 @@ function summarizeAgentUsage(messages = [], modelCalls = 0) {
     cacheHitTokens: 0,
     cacheMissTokens: 0,
     totalTokens: 0,
-    cacheHitRate: 0
+    cacheHitRate: 0,
+    currentContextTokens: 0,
+    contextWindowTokens: 0,
+    contextUsageRatio: 0
   };
   for (const message of Array.isArray(messages) ? messages : []) {
     if (message?.role !== "assistant" || !message.usage) continue;
@@ -46,6 +56,14 @@ function summarizeAgentUsage(messages = [], modelCalls = 0) {
     summary.reasoningTokens += Math.max(0, Number(message.usage.reasoning) || 0);
     summary.cacheHitTokens += Math.max(0, Number(message.usage.cacheRead) || 0);
     summary.cacheMissTokens += Math.max(0, Number(message.usage.cacheWrite) || 0);
+    const contextWindowTokens = Math.max(0, Number(message.usage.contextWindowTokens) || 0);
+    if (contextWindowTokens > 0) {
+      summary.currentContextTokens = Math.max(0, Number(message.usage.contextTokens) || 0);
+      summary.contextWindowTokens = contextWindowTokens;
+      summary.contextUsageRatio = Number((
+        summary.currentContextTokens / contextWindowTokens
+      ).toFixed(6));
+    }
   }
   summary.totalTokens = summary.promptTokens + summary.completionTokens;
   const cachePromptTokens = summary.cacheHitTokens + summary.cacheMissTokens;
@@ -106,7 +124,7 @@ function responseToAgentMessage(response = {}, model = createAgentModel()) {
     api: model.api,
     provider: model.provider,
     model: model.id,
-    usage: normalizeUsage(response.usage),
+    usage: normalizeUsage(response.usage, model.contextWindow),
     stopReason: resolveAgentStopReason(response),
     timestamp: Date.now()
   };

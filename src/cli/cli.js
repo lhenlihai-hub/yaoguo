@@ -11,6 +11,7 @@ const { spawn } = require("node:child_process");
 const { createApplicationServices } = require("../application/appServices");
 const { isPathInside } = require("../platform/shared/pathSafety");
 const { summarizeNameFromMessage, isAutoTaskTitle } = require("../platform/runtime/contentSignals");
+const { DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS } = require("../platform/ai/deepseekV4Policy");
 const { runUninstall, archiveTaskPublishedArtifacts } = require("./uninstall");
 
 const PACKAGE_ROOT = path.resolve(__dirname, "../..");
@@ -785,6 +786,7 @@ function formatUsage(usage = {}, { label = "本轮", durationMs = null } = {}) {
   if (Number(usage.reasoningTokens) > 0) rows.push(`推理 ${formatTokenCount(usage.reasoningTokens)}`);
   const cacheLabel = cacheUsage === usage ? "缓存命中" : "前台缓存";
   rows.push(`${cacheLabel} ${cacheRate}（${formatTokenCount(cacheHitTokens)}/${formatTokenCount(cachePromptTokens)}）`);
+  rows.push(`上下文 ${formatContextUsage(usage)}`);
   const backgroundCalls = Math.max(0, Number(usage.background?.modelCalls) || 0);
   if (backgroundCalls > 0) {
     const backgroundHit = Math.max(0, Number(usage.background?.cacheHitTokens) || 0);
@@ -833,7 +835,37 @@ function formatTuiUsage(usage = {}) {
   const miss = Math.max(0, Number(cacheUsage.cacheMissTokens) || 0);
   const total = hit + miss;
   const cache = total > 0 ? `${Math.round((hit / total) * 100)}%` : "—";
-  return `↑${formatTuiCount(usage.promptTokens)} ↓${formatTuiCount(usage.completionTokens)} C${cache}`;
+  return `↑${formatTuiCount(usage.promptTokens)} ↓${formatTuiCount(usage.completionTokens)} C${cache} W${formatContextUsage(usage, false)}`;
+}
+
+function formatContextUsage(usage = {}, verbose = true) {
+  const currentTokens = Math.max(0, Number(
+    usage.currentContextTokens || usage.foreground?.currentContextTokens
+  ) || 0);
+  const contextWindowTokens = Math.max(0, Number(
+    usage.contextWindowTokens || usage.foreground?.contextWindowTokens
+  ) || DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS);
+  const persistedRatio = Math.max(0, Number(
+    usage.contextUsageRatio || usage.foreground?.contextUsageRatio
+  ) || 0);
+  const ratio = currentTokens > 0 && contextWindowTokens > 0
+    ? currentTokens / contextWindowTokens
+    : persistedRatio;
+  const displayedTokens = currentTokens || Math.round(ratio * contextWindowTokens);
+  const percentage = formatContextPercentage(ratio);
+  return verbose
+    ? (ratio > 0
+      ? `${percentage}（${formatTuiCount(displayedTokens)}/${formatTuiCount(contextWindowTokens)}）`
+      : "—")
+    : percentage;
+}
+
+function formatContextPercentage(ratio = 0) {
+  const percentage = Math.max(0, Number(ratio) || 0) * 100;
+  if (percentage <= 0) return "—";
+  if (percentage < 1) return `${percentage.toFixed(2)}%`;
+  if (percentage < 10) return `${percentage.toFixed(1)}%`;
+  return `${Math.round(percentage)}%`;
 }
 
 function foregroundCacheUsage(usage = {}) {

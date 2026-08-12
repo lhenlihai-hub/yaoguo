@@ -348,7 +348,9 @@ class AiRouter {
           thinkingOverride,
           reasoningEffortOverride,
           maxTokens,
-          deepseekPolicy
+          deepseekPolicy,
+          modelContextTokens,
+          outputReserveTokens
         };
       } catch (error) {
         await this.logCall({

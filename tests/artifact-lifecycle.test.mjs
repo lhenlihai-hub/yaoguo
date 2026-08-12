@@ -111,13 +111,11 @@ test("publish_artifact 保留受管快照并把成品交付到用户明确指定
   }
 });
 
-test("受管文档任务默认只把一个主成品交付到绑定工作空间", async () => {
-  const ctx = await createContext("yaoguo-artifact-primary-only-");
+test("受管文档任务允许 Agent 自主发布全部判断为交付物的文件", async () => {
+  const ctx = await createContext("yaoguo-artifact-agent-selected-");
   const outputDir = await mkdtemp(join(tmpdir(), "yaoguo-artifact-bound-workspace-"));
   try {
     ctx.defaultArtifactDestination = outputDir;
-    ctx.artifactPublishLimit = 1;
-    ctx.publishedArtifactsThisTurn = new Map();
     const primary = join(ctx.taskDir, ".candidates", "course.pptx");
     await writeMinimalPptx(primary);
     const primaryInspection = await inspectArtifactTool.execute({ path: primary }, ctx);
@@ -131,18 +129,16 @@ test("受管文档任务默认只把一个主成品交付到绑定工作空间",
     assert.match(published.managedAbsolute, /\/final\/course\.pptx$/);
     await assert.rejects(() => access(primary));
 
-    const helper = join(ctx.taskDir, ".candidates", "gen_pptx.js");
-    await writeFile(helper, "console.log('helper')", "utf8");
-    const helperInspection = await inspectArtifactTool.execute({ path: helper }, ctx);
-    await assert.rejects(
-      () => publishArtifactTool.execute({
-        path: helper,
-        inspectionId: helperInspection.inspectionId,
-        title: "生成脚本"
-      }, ctx),
-      /最多发布 1 个成品/
-    );
-    assert.equal((await readdir(outputDir)).length, 1);
+    const handout = join(ctx.taskDir, ".candidates", "course-handout.md");
+    await writeFile(handout, "# 公开课讲义\n\n配套阅读材料。", "utf8");
+    const handoutInspection = await inspectArtifactTool.execute({ path: handout }, ctx);
+    const publishedHandout = await publishArtifactTool.execute({
+      path: handout,
+      inspectionId: handoutInspection.inspectionId,
+      title: "公开课讲义"
+    }, ctx);
+    assert.equal(publishedHandout.absolute, await realpath(join(outputDir, "course-handout.md")));
+    assert.deepEqual((await readdir(outputDir)).sort(), ["course-handout.md", "course.pptx"]);
   } finally {
     await rm(ctx.taskDir, { recursive: true, force: true });
     await rm(outputDir, { recursive: true, force: true });

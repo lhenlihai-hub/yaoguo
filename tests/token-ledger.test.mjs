@@ -93,7 +93,8 @@ test("TokenLedger 可按项目会话汇总 token 与缓存命中", async () => {
     await ledger.recordCall({
       projectId: "p1", taskId: "t1", status: "completed",
       actualPromptTokens: 100, actualCompletionTokens: 20, reasoningTokens: 8,
-      cacheHitTokens: 70, cacheMissTokens: 30
+      cacheHitTokens: 70, cacheMissTokens: 30,
+      modelContextTokens: 1_000_000
     });
     await ledger.recordCall({
       projectId: "p1", taskId: "t1", status: "completed",
@@ -117,6 +118,9 @@ test("TokenLedger 可按项目会话汇总 token 与缓存命中", async () => {
       totalTokens: 180,
       cacheHitRate: 0.6,
       invalidRows: 0,
+      currentContextTokens: 120,
+      contextWindowTokens: 1_000_000,
+      contextUsageRatio: 0.00012,
       foreground: {
         modelCalls: 1,
         completedCalls: 1,
@@ -127,7 +131,10 @@ test("TokenLedger 可按项目会话汇总 token 与缓存命中", async () => {
         cacheHitTokens: 70,
         cacheMissTokens: 30,
         totalTokens: 120,
-        cacheHitRate: 0.7
+        cacheHitRate: 0.7,
+        currentContextTokens: 120,
+        contextWindowTokens: 1_000_000,
+        contextUsageRatio: 0.00012
       },
       background: {
         modelCalls: 1,
@@ -139,7 +146,10 @@ test("TokenLedger 可按项目会话汇总 token 与缓存命中", async () => {
         cacheHitTokens: 20,
         cacheMissTokens: 30,
         totalTokens: 60,
-        cacheHitRate: 0.4
+        cacheHitRate: 0.4,
+        currentContextTokens: 0,
+        contextWindowTokens: 0,
+        contextUsageRatio: 0
       }
     });
   } finally {

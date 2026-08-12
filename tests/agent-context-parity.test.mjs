@@ -18,6 +18,7 @@ test("直接输入与 agent-default 使用同一套任务上下文，只允许�
   engine.projectService = {
     getProject: async () => ({ id: "p1", name: "季度经营" }),
     getTask: async () => ({ id: "t1", title: "董事会报告", brief: "保留三组对比数据" }),
+    getTaskDir: () => "/tmp/yaoguo-agent-context-parity",
     listReferences: async () => {
       calls.references += 1;
       return [{ title: "财报", url: "https://example.com/report", snippet: "经过核验的季度数据" }];
@@ -54,6 +55,8 @@ test("直接输入与 agent-default 使用同一套任务上下文，只允许�
   assert.doesNotMatch(workflow, /【项目记忆与参考锚】|【已固定长期记忆】/);
   assert.match(direct, /【任务引用资料】/);
   assert.match(direct, /【任务历史】/);
+  assert.match(direct, /宿主不预设发布数量或上限/);
+  assert.doesNotMatch(direct, /只发布 1 个|最多 4 个/);
   assert.doesNotMatch(direct, /本轮唯一消息/);
   assert.doesNotMatch(workflow, /本轮唯一消息/);
   assert.equal(calls.references, 2);

@@ -27,7 +27,7 @@ async buildAgentContext({
     parts.push("【文件制作与交付】", [
       `内部制作区：${path.join(taskDir, ".candidates")}`,
       "制作文档、演示文稿、表格、图片或网页时，write/edit/bash 选择 workspace=artifact，源稿、生成脚本、依赖清单、预览、缓存和中间文件全部写入内部制作区；普通项目源码使用 workspace=project。",
-      "用户未明确要求多个独立文件或源文件时，检查后只发布 1 个与指定格式直接对应的主成品。"
+      "由同一个 Agent 根据用户目标与验收条件逐个判断交付物：需要交给用户的文件声明 deliverable、检查并发布；过程文件保留在内部制作区。宿主不预设发布数量或上限。"
     ].join("\n"));
   }
 

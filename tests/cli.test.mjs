@@ -65,16 +65,19 @@ test("CLI 格式化本轮 token、推理与缓存命中，并识别内置统计�
     completionTokens: 678,
     reasoningTokens: 120,
     cacheHitTokens: 9000,
-    cacheMissTokens: 3000
+    cacheMissTokens: 3000,
+    currentContextTokens: 120000,
+    contextWindowTokens: 1000000,
+    contextUsageRatio: 0.12
   };
   assert.equal(
     formatUsage(usage, { durationMs: 12500 }),
-    "本轮 3 次模型调用 · 输入 12,345 · 输出 678 · 推理 120 · 缓存命中 75%（9,000/12,000） · 12.5s"
+    "本轮 3 次模型调用 · 输入 12,345 · 输出 678 · 推理 120 · 缓存命中 75%（9,000/12,000） · 上下文 12%（120k/1.0m） · 12.5s"
   );
   assert.equal(isUsageCommand(" /usage "), true);
   assert.equal(isUsageCommand("/tokens"), true);
   assert.equal(isUsageCommand("usage"), false);
-  assert.equal(formatTuiUsage(usage), "↑12k ↓678 C75%");
+  assert.equal(formatTuiUsage(usage), "↑12k ↓678 C75% W12%");
   const sessionUsageWithBackground = {
     ...usage,
     modelCalls: 5,
@@ -87,9 +90,9 @@ test("CLI 格式化本轮 token、推理与缓存命中，并识别内置统计�
   };
   assert.equal(
     formatUsage(sessionUsageWithBackground, { label: "会话累计" }),
-    "会话累计 5 次模型调用 · 输入 12,345 · 输出 678 · 推理 120 · 前台缓存 75%（9,000/12,000） · 后台 2 次，缓存 10%"
+    "会话累计 5 次模型调用 · 输入 12,345 · 输出 678 · 推理 120 · 前台缓存 75%（9,000/12,000） · 上下文 12%（120k/1.0m） · 后台 2 次，缓存 10%"
   );
-  assert.equal(formatTuiUsage(sessionUsageWithBackground), "↑12k ↓678 C75%");
+  assert.equal(formatTuiUsage(sessionUsageWithBackground), "↑12k ↓678 C75% W12%");
   assert.deepEqual(await sessionUsage({
     platformKernel: {
       tokenLedger: {
@@ -357,7 +360,7 @@ test("CLI /resume 可打开历史会话并恢复对话与 usage", async () => {
   assert.equal(session.task.id, "t2");
   assert.deepEqual(events[0], ["session", { workspacePath: "/tmp/work", taskTitle: "历史会话" }]);
   assert.deepEqual(events[1], ["history", [{ role: "user", content: "历史问题" }]]);
-  assert.deepEqual(events[2], ["usage", "↑1.2k ↓80 C—"]);
+  assert.deepEqual(events[2], ["usage", "↑1.2k ↓80 C— W—"]);
 });
 
 test("CLI /resume 用首条用户消息修复旧默认会话名", async () => {
@@ -548,7 +551,7 @@ test("CLI TUI 将模型 token 流、成品与 usage 交给同一对话界面", a
     "delta:完成。",
     "finish:已经完成。",
     "artifact:/tmp/work/report.md",
-    "usage:↑2.0k ↓120 C75%"
+    "usage:↑2.0k ↓120 C75% W—"
   ]);
 });
 

@@ -53,6 +53,7 @@ class TokenLedger {
       estimatedRunContextTokens: Number(entry.runContextTokens || 0),
       estimatedPinnedTokens: Number(entry.pinnedTokens || 0),
       durationMs: Number(entry.durationMs || 0),
+      modelContextTokens: Number(entry.modelContextTokens || 0),
       contextUsageRatio: Number(entry.contextUsageRatio || 0),
       actualContextUsageRatio: Number(entry.actualContextUsageRatio ?? entry.contextUsageRatio ?? 0),
       finishReason: `${entry.finishReason || ""}`,
@@ -194,6 +195,9 @@ function emptyUsageSummary() {
     totalTokens: 0,
     cacheHitRate: 0,
     invalidRows: 0,
+    currentContextTokens: 0,
+    contextWindowTokens: 0,
+    contextUsageRatio: 0,
     foreground: emptyUsageBucket(),
     background: emptyUsageBucket()
   };
@@ -201,7 +205,25 @@ function emptyUsageSummary() {
 
 function addUsageRow(summary, row = {}) {
   addUsageCounters(summary, row);
-  addUsageCounters(isBackgroundCall(row) ? summary.background : summary.foreground, row);
+  const background = isBackgroundCall(row);
+  const bucket = background ? summary.background : summary.foreground;
+  addUsageCounters(bucket, row);
+  if (!background && `${row.status || ""}` === "completed") {
+    setCurrentContext(summary, row);
+    setCurrentContext(summary.foreground, row);
+  }
+}
+
+function setCurrentContext(summary, row = {}) {
+  const contextWindowTokens = Math.max(0, Number(row.modelContextTokens) || 0);
+  const currentContextTokens = Math.max(0,
+    Number(row.promptTokens) + Number(row.completionTokens)
+  );
+  summary.currentContextTokens = currentContextTokens;
+  summary.contextWindowTokens = contextWindowTokens;
+  summary.contextUsageRatio = contextWindowTokens > 0
+    ? Number((currentContextTokens / contextWindowTokens).toFixed(6))
+    : Math.max(0, Number(row.actualContextUsageRatio) || 0);
 }
 
 function addUsageCounters(summary, row = {}) {
@@ -232,7 +254,10 @@ function emptyUsageBucket() {
     cacheHitTokens: 0,
     cacheMissTokens: 0,
     totalTokens: 0,
-    cacheHitRate: 0
+    cacheHitRate: 0,
+    currentContextTokens: 0,
+    contextWindowTokens: 0,
+    contextUsageRatio: 0
   };
 }
 

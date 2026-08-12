@@ -173,7 +173,10 @@ test("通用 Agent loop 通过基础 read 工具后继续完成交付", async ()
       cacheHitTokens: 120,
       cacheMissTokens: 40,
       totalTokens: 190,
-      cacheHitRate: 0.75
+      cacheHitRate: 0.75,
+      currentContextTokens: 80,
+      contextWindowTokens: 1024 * 1024,
+      contextUsageRatio: 0.000076
     });
   } finally {
     await rm(workDir, { recursive: true, force: true });
@@ -873,27 +876,8 @@ test("制作任务保持单一 Agent cwd，由工具契约选择内部制作区"
     assert.equal(toolCtx.agentWorkDir, workspaceIdentity.canonicalPath);
     assert.equal(toolCtx.artifactWorkDir, candidateDir);
     assert.equal(toolCtx.defaultArtifactDestination, workspaceIdentity.canonicalPath);
-    assert.equal(toolCtx.artifactPublishLimit, 1);
+    assert.equal("artifactPublishLimit" in toolCtx, false);
     assert.deepEqual(toolCtx.agentWriteScopeAllow, [workspaceIdentity.canonicalPath, candidateDir]);
-
-    const multiToolCtx = await engine._buildAgentToolContext({
-      projectId: "project-test",
-      taskId: "task-test",
-      message: "同时生成 PPT 和 PDF 两种成品"
-    });
-    assert.equal(multiToolCtx.artifactPublishLimit, 2);
-    const contentCountToolCtx = await engine._buildAgentToolContext({
-      projectId: "project-test",
-      taskId: "task-test",
-      message: "做一份包含 3 个章节的 PPT"
-    });
-    assert.equal(contentCountToolCtx.artifactPublishLimit, 1);
-    const sourceToolCtx = await engine._buildAgentToolContext({
-      projectId: "project-test",
-      taskId: "task-test",
-      message: "请同时交付 PPT 成品与源文件"
-    });
-    assert.equal(sourceToolCtx.artifactPublishLimit, 2);
   } finally {
     await rm(taskDir, { recursive: true, force: true });
     await rm(workspacePath, { recursive: true, force: true });
