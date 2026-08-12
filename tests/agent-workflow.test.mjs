@@ -152,11 +152,13 @@ test("Agent 只登记明确发布的最终文件，不把构建脚本算成结�
       if (round === 0) {
         return { toolCalls: [
           toolCall("write-build", "write", {
+            workspace: "artifact",
             path: "build.js",
             content: "console.log('build')",
             deliverable: false
           }),
           toolCall("write-game", "write", {
+            workspace: "artifact",
             path: "game.html",
             content: "<!doctype html><html><body>可运行游戏</body></html>",
             deliverable: true
@@ -223,6 +225,7 @@ test("工作空间文件发布后再改写，collector 仍只交付已审查的 
     engine.aiRouter = detailedRouter(async (round, payload) => {
       if (round === 0) {
         return { toolCalls: [toolCall("write-workspace-report", "write", {
+          workspace: "project",
           path: "report.md",
           content: reviewed,
           deliverable: true
@@ -244,6 +247,7 @@ test("工作空间文件发布后再改写，collector 仍只交付已审查的 
       }
       if (round === 3) {
         return { toolCalls: [toolCall("rewrite-workspace-report", "edit", {
+          workspace: "project",
           path: "report.md",
           edits: [{ oldText: reviewed, newText: rewritten }],
           deliverable: false
@@ -282,6 +286,7 @@ test("声明为成品的普通写入未发布时，运行时阻止自然语言�
     engine.aiRouter = detailedRouter(async (round, payload) => {
       if (round === 0) {
         return { toolCalls: [toolCall("write-report", "write", {
+          workspace: "artifact",
           path: "report.md",
           content: "# 报告\n\n真实内容",
           deliverable: true

@@ -99,6 +99,7 @@ class AgentToolRuntime {
       shellReadRoots: this.toolCtx.agentShellReadScopeAllow || [],
       deniedReadRoots: this.toolCtx.agentReadScopeDeny || [],
       protectedWriteRoots: this.toolCtx.agentWriteScopeDeny || [],
+      artifactWorkDir: this.toolCtx.artifactWorkDir || "",
       openExternal: this.toolCtx.openExternal,
       toolNames: this.options.baseToolNames,
       shellSandboxFactory: this.options.shellSandboxFactory,
@@ -222,15 +223,25 @@ class AgentToolRuntime {
 
   async beforeToolCall(context, signal = null) {
     const name = `${context?.toolCall?.name || ""}`;
-    const args = context?.args || {};
+    const rawArgs = context?.args || {};
+    let args = rawArgs;
+    let workspaceRejection = null;
+    try {
+      args = resolveBaseToolWorkspaceArgs(rawArgs, name, this.toolCtx);
+    } catch (error) {
+      workspaceRejection = {
+        code: "TOOL_INPUT_INVALID",
+        error: `${error?.message || error}`
+      };
+    }
     const callId = `${context?.toolCall?.id || ""}`;
     const policy = this.policyFor(name, args);
     this.callsThisRound += 1;
     const quotaKey = toolQuotaKey(name, args);
     const quotaCount = (this.callsByQuota.get(quotaKey) || 0) + 1;
     this.callsByQuota.set(quotaKey, quotaCount);
-    let rejection = null;
-    rejection = this.instructionMemoryRejection(name, args);
+    let rejection = workspaceRejection;
+    if (!rejection) rejection = this.instructionMemoryRejection(name, args, rawArgs);
     if (!rejection && name === "pin_memory") {
       try {
         validateMemoryWrite(args);
@@ -282,12 +293,19 @@ class AgentToolRuntime {
   async prepareInstructionMemory(calls = []) {
     const turn = this.toolCtx.instructionMemoryTurn;
     if (!turn?.prepareToolBatch) return null;
-    return turn.prepareToolBatch(calls);
+    const projectCalls = calls.filter((call) => {
+      const name = `${call?.function?.name || ""}`;
+      if (!["write", "edit", "bash"].includes(name)) return true;
+      const args = parseArguments(call?.function?.arguments);
+      return `${args?.workspace || ""}` !== "artifact";
+    });
+    return turn.prepareToolBatch(projectCalls);
   }
 
-  instructionMemoryRejection(name, args) {
+  instructionMemoryRejection(name, args, rawArgs = args) {
     const turn = this.toolCtx.instructionMemoryTurn;
     if (!turn) return null;
+    if (["write", "edit", "bash"].includes(name) && rawArgs?.workspace === "artifact") return null;
     if (["write", "edit"].includes(name) && turn.isProtectedPath?.(args?.path)) {
       return {
         code: "INSTRUCTION_FILE_PROTECTED",
@@ -355,15 +373,16 @@ class AgentToolRuntime {
   }
 
   executeBaseTool(tool, toolCallId, args, signal, onUpdate) {
+    const executionArgs = resolveBaseToolWorkspaceArgs(args, tool.name, this.toolCtx);
     return this.executeWithPolicy({
       name: tool.name,
       toolCallId,
-      args,
+      args: executionArgs,
       signal,
       execute: async () => {
-        const value = await tool.execute(toolCallId, args, signal, onUpdate);
-        if (args?.deliverable === true && ["write", "edit"].includes(tool.name)) {
-          await registerDeclaredCandidate(this.loopToolCtx, args.path, tool.name);
+        const value = await tool.execute(toolCallId, executionArgs, signal, onUpdate);
+        if (executionArgs?.deliverable === true && ["write", "edit"].includes(tool.name)) {
+          await registerDeclaredCandidate(this.loopToolCtx, executionArgs.path, tool.name);
         }
         return value;
       }
@@ -863,6 +882,20 @@ class AgentToolRuntime {
       edits: [...this.contextEdits]
     };
   }
+}
+
+function resolveBaseToolWorkspaceArgs(args = {}, toolName = "", toolCtx = {}) {
+  if (!["write", "edit", "bash"].includes(toolName)) return args;
+  const workspace = `${args.workspace || "project"}`;
+  if (workspace === "artifact" && !`${toolCtx.artifactWorkDir || ""}`.trim()) {
+    throw new Error("当前任务没有可用的内部制作区。");
+  }
+  if (!["write", "edit"].includes(toolName) || path.isAbsolute(`${args.path || ""}`)) return args;
+  const workDir = workspace === "artifact"
+    ? `${toolCtx.artifactWorkDir || ""}`.trim()
+    : `${toolCtx.agentWorkDir || ""}`.trim();
+  if (!workDir) throw new Error("当前任务没有可用的工作区。");
+  return { ...args, path: path.resolve(workDir, `${args.path || ""}`) };
 }
 
 function dedupeSchemas(schemas) {

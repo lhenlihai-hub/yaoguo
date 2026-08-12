@@ -39,7 +39,7 @@ const PUBLISH_ARTIFACT_TOOL_SCHEMA = {
         path: {
           type: "string",
           minLength: 1,
-          description: "最终文件路径。相对路径按当前 Agent 工作空间解析，也可使用当前任务或工作空间内的绝对路径。"
+          description: "最终文件路径。相对路径优先按宿主管理的内部制作区解析，也可使用当前任务或工作空间内的绝对路径。"
         },
         inspectionId: {
           type: "string",
@@ -75,7 +75,20 @@ const publishArtifactTool = {
       throw new Error("inspectionId 不属于该文件，请先调用 inspect_artifact。");
     }
     if (!inspection.valid) throw new Error("候选文件的真实检查未通过，不能发布。");
-    const deliveryPlan = await resolveExplicitDelivery(args.destination, ctx.explicitOutputTargets);
+    const internalCandidate = await isInternalCandidate(canonical, ctx.taskDir);
+    const publishedThisTurn = publishedArtifactRegistry(ctx);
+    const publishLimit = Number(ctx.artifactPublishLimit);
+    if (internalCandidate && Number.isFinite(publishLimit) && publishLimit > 0 && publishedThisTurn.size >= publishLimit) {
+      throw new Error(`本轮用户要求最多发布 ${publishLimit} 个成品；源稿、脚本、依赖清单、预览和中间文件不能追加发布。`);
+    }
+    const defaultDestination = internalCandidate
+      ? ctx.defaultArtifactDestination
+      : "";
+    const deliveryPlan = await resolveExplicitDelivery(
+      args.destination,
+      ctx.explicitOutputTargets,
+      defaultDestination
+    );
     await assertExplicitDeliveryAllowed(deliveryPlan, ctx.explicitOutputDenyRoots);
     const title = `${args.title || ""}`.trim() || path.basename(canonical);
     const { absolute: managedAbsolute, sha256 } = await snapshotInspectedArtifact({
@@ -93,6 +106,9 @@ const publishArtifactTool = {
     if (deliveryPlan) await removeInternalCandidate(canonical, await fsp.realpath(ctx.taskDir));
     if (inspection.snapshot) await fsp.unlink(inspection.snapshot).catch(() => {});
     markCandidatePublished(ctx, canonical, managedAbsolute, inspectionId);
+    if (internalCandidate) {
+      publishedThisTurn.set(managedAbsolute, { absolute, managedAbsolute, inspectionId });
+    }
     const publishedStat = await fsp.stat(absolute);
     return {
       absolute,
@@ -109,7 +125,11 @@ const publishArtifactTool = {
   }
 };
 
-async function resolveExplicitDelivery(requestedDestination = "", rawTargets = []) {
+async function resolveExplicitDelivery(
+  requestedDestination = "",
+  rawTargets = [],
+  defaultDestination = ""
+) {
   const targets = [];
   for (const item of Array.isArray(rawTargets) ? rawTargets : []) {
     const raw = `${item?.path || ""}`.trim();
@@ -127,6 +147,12 @@ async function resolveExplicitDelivery(requestedDestination = "", rawTargets = [
     if (`${requestedDestination || ""}`.trim()) {
       throw new Error("destination 不是用户在本轮明确指定的输出位置。");
     }
+    const requestedDefault = `${defaultDestination || ""}`.trim();
+    const directory = requestedDefault
+      ? await fsp.realpath(path.resolve(requestedDefault)).catch(() => "")
+      : "";
+    const stat = directory ? await fsp.stat(directory).catch(() => null) : null;
+    if (stat?.isDirectory()) return { kind: "directory", path: directory };
     return null;
   }
   const requested = `${requestedDestination || ""}`.trim();
@@ -146,6 +172,23 @@ async function resolveExplicitDelivery(requestedDestination = "", rawTargets = [
     }
   }
   throw new Error("destination 超出用户在本轮明确指定的输出位置。");
+}
+
+function publishedArtifactRegistry(ctx = {}) {
+  if (!(ctx.publishedArtifactsThisTurn instanceof Map)) {
+    ctx.publishedArtifactsThisTurn = new Map();
+  }
+  return ctx.publishedArtifactsThisTurn;
+}
+
+async function isInternalCandidate(absolute, taskDir = "") {
+  const requestedTaskDir = `${taskDir || ""}`.trim();
+  if (!requestedTaskDir) return false;
+  const taskRoot = await fsp.realpath(requestedTaskDir).catch(() => "");
+  const candidateRoot = taskRoot
+    ? await fsp.realpath(path.join(taskRoot, ".candidates")).catch(() => "")
+    : "";
+  return Boolean(candidateRoot && isPathInside(candidateRoot, absolute));
 }
 
 async function copyPublishedArtifact(source, plan, originalFileName = path.basename(source)) {

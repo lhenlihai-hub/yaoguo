@@ -107,6 +107,7 @@ async runGenerateVisualFromToolCall({
     projectId,
     taskId,
     requestedPath,
+    artifactFirst: true,
     allowedExtensions: [".html", ".htm"]
   }).catch(() => null);
   throwIfAborted(options.signal);
@@ -702,7 +703,8 @@ _validateDocumentSource({ format = "", resolved = null } = {}) {
 },
 
 async _readTaskScopedTextFile({
-  projectId = "", taskId = "", requestedPath = "", allowedExtensions = []
+  projectId = "", taskId = "", requestedPath = "", allowedExtensions = [],
+  artifactFirst = false
 } = {}) {
   if (!projectId || !taskId || !requestedPath || !this.projectService?.getTaskDir) return null;
   const taskDir = await fsp.realpath(this.projectService.getTaskDir(projectId, taskId));
@@ -710,11 +712,18 @@ async _readTaskScopedTextFile({
     ? await this.projectService.resolveTaskWorkspace(projectId, taskId)
     : await legacyDeliveryWorkspace(this.projectService, projectId, taskId);
   const workDir = `${workspace?.workspacePath || ""}`.trim() || taskDir;
-  const resolved = path.resolve(
-    path.isAbsolute(requestedPath) ? requestedPath : path.join(workDir, requestedPath)
-  );
-  const canonical = await fsp.realpath(resolved);
-  if (![taskDir, workDir].some((root) => isPathInside(root, canonical))) {
+  const artifactDir = path.join(taskDir, ".candidates");
+  const candidates = path.isAbsolute(requestedPath)
+    ? [requestedPath]
+    : [...new Set((artifactFirst ? [artifactDir, workDir] : [workDir, artifactDir])
+      .map((root) => path.join(root, requestedPath)))];
+  let canonical = "";
+  for (const candidate of candidates) {
+    canonical = await fsp.realpath(path.resolve(candidate)).catch(() => "");
+    if (canonical) break;
+  }
+  if (!canonical) throw new Error(`文件不存在：${requestedPath}`);
+  if (![taskDir, workDir, artifactDir].some((root) => isPathInside(root, canonical))) {
     throw new Error("文件路径不在当前任务目录或 Agent 工作空间内。");
   }
   const extension = path.extname(canonical).toLowerCase();
@@ -732,16 +741,10 @@ async _readTaskScopedTextFile({
   };
 },
 
-// 绑定工作空间时，候选文件直接落到工作空间；没有绑定时放入内部隐藏候选区，发布后再进入 final。
+// 所有可视成品先在任务隐藏候选区制作；检查与发布后再进入 final，
+// 并由 publish_artifact 决定是否复制到用户工作空间。
 async _resolveAgentExportDir({ projectId, taskId }) {
   if (!projectId || !taskId || !this.projectService?.getTaskDir) return null;
-  const workspace = typeof this.projectService?.resolveTaskWorkspace === "function"
-    ? await this.projectService.resolveTaskWorkspace(projectId, taskId)
-    : await legacyDeliveryWorkspace(this.projectService, projectId, taskId);
-  const workspacePath = `${workspace?.workspacePath || ""}`.trim();
-  if (workspacePath) {
-    return workspacePath;
-  }
   const taskDir = this.projectService.getTaskDir(projectId, taskId);
   if (!taskDir) return null;
   const dir = path.join(taskDir, ".candidates");

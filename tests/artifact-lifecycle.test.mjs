@@ -111,6 +111,44 @@ test("publish_artifact 保留受管快照并把成品交付到用户明确指定
   }
 });
 
+test("受管文档任务默认只把一个主成品交付到绑定工作空间", async () => {
+  const ctx = await createContext("yaoguo-artifact-primary-only-");
+  const outputDir = await mkdtemp(join(tmpdir(), "yaoguo-artifact-bound-workspace-"));
+  try {
+    ctx.defaultArtifactDestination = outputDir;
+    ctx.artifactPublishLimit = 1;
+    ctx.publishedArtifactsThisTurn = new Map();
+    const primary = join(ctx.taskDir, ".candidates", "course.pptx");
+    await writeMinimalPptx(primary);
+    const primaryInspection = await inspectArtifactTool.execute({ path: primary }, ctx);
+    const published = await publishArtifactTool.execute({
+      path: primary,
+      inspectionId: primaryInspection.inspectionId,
+      title: "公开课课件"
+    }, ctx);
+
+    assert.equal(published.absolute, await realpath(join(outputDir, "course.pptx")));
+    assert.match(published.managedAbsolute, /\/final\/course\.pptx$/);
+    await assert.rejects(() => access(primary));
+
+    const helper = join(ctx.taskDir, ".candidates", "gen_pptx.js");
+    await writeFile(helper, "console.log('helper')", "utf8");
+    const helperInspection = await inspectArtifactTool.execute({ path: helper }, ctx);
+    await assert.rejects(
+      () => publishArtifactTool.execute({
+        path: helper,
+        inspectionId: helperInspection.inspectionId,
+        title: "生成脚本"
+      }, ctx),
+      /最多发布 1 个成品/
+    );
+    assert.equal((await readdir(outputDir)).length, 1);
+  } finally {
+    await rm(ctx.taskDir, { recursive: true, force: true });
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
 test("publish_artifact 即使有显式路径也不写入宿主控制目录或腰果运行数据", async () => {
   const ctx = await createContext("yaoguo-artifact-protected-output-");
   const workspace = await mkdtemp(join(tmpdir(), "yaoguo-artifact-protected-workspace-"));

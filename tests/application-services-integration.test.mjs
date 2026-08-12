@@ -42,6 +42,7 @@ function applicationRouter() {
     let toolCalls = [];
     if (round === 0) {
       toolCalls = [toolCall("write-report", "write", {
+        workspace: "artifact",
         path: "report.md",
         content: "# 验证报告\n\n这是唯一的最终产物。\n",
         deliverable: true

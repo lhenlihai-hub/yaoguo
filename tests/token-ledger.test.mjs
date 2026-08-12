@@ -98,7 +98,8 @@ test("TokenLedger 可按项目会话汇总 token 与缓存命中", async () => {
     await ledger.recordCall({
       projectId: "p1", taskId: "t1", status: "completed",
       actualPromptTokens: 50, actualCompletionTokens: 10,
-      cacheHitTokens: 20, cacheMissTokens: 30
+      cacheHitTokens: 20, cacheMissTokens: 30,
+      internalCall: true, taskType: "memory"
     });
     await ledger.recordCall({
       projectId: "p1", taskId: "other", status: "completed",
@@ -115,7 +116,31 @@ test("TokenLedger 可按项目会话汇总 token 与缓存命中", async () => {
       cacheMissTokens: 60,
       totalTokens: 180,
       cacheHitRate: 0.6,
-      invalidRows: 0
+      invalidRows: 0,
+      foreground: {
+        modelCalls: 1,
+        completedCalls: 1,
+        failedCalls: 0,
+        promptTokens: 100,
+        completionTokens: 20,
+        reasoningTokens: 8,
+        cacheHitTokens: 70,
+        cacheMissTokens: 30,
+        totalTokens: 120,
+        cacheHitRate: 0.7
+      },
+      background: {
+        modelCalls: 1,
+        completedCalls: 1,
+        failedCalls: 0,
+        promptTokens: 50,
+        completionTokens: 10,
+        reasoningTokens: 0,
+        cacheHitTokens: 20,
+        cacheMissTokens: 30,
+        totalTokens: 60,
+        cacheHitRate: 0.4
+      }
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });

@@ -126,13 +126,14 @@ class AiRouter {
         callId: crypto.randomUUID(), startedAt, provider, model, deepseekPolicy, callMaxTokens,
         taskType, title, instruction, input, runContext, projectId, taskId, runId,
         stepId, contentFilterSafe, jsonMode, responseFormat, tokenHandler,
-        instructionMemorySummary
+        instructionMemorySummary, internalCall
       }, request);
       setup = { settings, provider, model, effectiveSignal, retry, propagated,
         tokenHandler, reasoningHandler, callTimeoutMs, callMaxTokens, deepseekPolicy, request, startedAt, call };
     } catch (error) {
       await this.logCall({
         id: crypto.randomUUID(), createdAt: setupStartedAt.toISOString(), taskType, title,
+        internalCall,
         providerId: setupProvider?.id || "", providerName: setupProvider?.name || setupProvider?.id || "", model: setupModel,
         projectId, taskId, runId, stepId, status: "error", phase: "setup",
         durationMs: Date.now() - setupStartedAt.getTime(), error: `${error?.message || error}`
@@ -187,6 +188,7 @@ class AiRouter {
         model,
         settings,
         taskType,
+        internalCall,
         title,
         projectId,
         taskId,
@@ -256,6 +258,7 @@ class AiRouter {
     } catch (error) {
       await this.logCall({
         id: crypto.randomUUID(), createdAt: setupStartedAt.toISOString(), taskType, title,
+        internalCall: base.internalCall === true,
         providerId: provider?.id || "", providerName: provider?.name || provider?.id || "", model: model || "",
         projectId: base.projectId || "", taskId: base.taskId || "", runId: base.runId || "", stepId: base.stepId || "",
         status: "error", phase: "setup", durationMs: Date.now() - setupStartedAt.getTime(),
@@ -281,6 +284,7 @@ class AiRouter {
         runId: base.runId || "",
         stepId: base.stepId || "",
         taskType,
+        internalCall: base.internalCall === true,
         title: `${title || "Agent"} · 工具轮次 ${round + 1}`,
         providerId: provider.id,
         providerName: provider.name || provider.id,
@@ -334,6 +338,7 @@ class AiRouter {
           model,
           settings,
           taskType,
+          internalCall: base.internalCall === true,
           title,
           projectId: base.projectId || "",
           taskId: base.taskId || "",

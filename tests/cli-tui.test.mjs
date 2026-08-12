@@ -115,6 +115,28 @@ test("TUI 展示真实推理耗时、工作流程与完整路径", async () => {
   await ui.dispose();
 });
 
+test("TUI 长推理过程不用高频动画或计时触发整屏重绘", async () => {
+  const terminal = new FakeTerminal(72, 8);
+  const ui = await createTerminalUi({ terminal, workspacePath: "/tmp/work" });
+  ui.start();
+  ui.setBusy(true, "正在思考…");
+  const stream = ui.beginAssistant();
+  ui.appendReasoning(stream, Array.from({ length: 24 }, (_, index) => `思考 ${index + 1}`).join("\n"));
+  await waitForRender();
+
+  const redrawsAfterContent = ui.tui.fullRedraws;
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+
+  assert.equal(ui.loader.intervalId, null, "运行指示为静态帧，不应创建 80ms 动画定时器");
+  assert.equal(ui.tui.fullRedraws, redrawsAfterContent, "底部秒级状态刷新不应重画屏幕上方的长内容");
+
+  ui.appendReasoning(stream, "", { phase: "complete", durationMs: 1250 });
+  ui.finishAssistant(stream, "已完成。");
+  await waitForRender();
+  assert.match(terminal.text(), /思考过程 · 1\.3s/);
+  await ui.dispose();
+});
+
 test("TUI 选择菜单可键盘操作，API Key 只渲染掩码", async () => {
   const terminal = new FakeTerminal();
   const ui = await createTerminalUi({ terminal, workspacePath: "/tmp/work" });

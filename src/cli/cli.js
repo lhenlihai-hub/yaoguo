@@ -770,8 +770,9 @@ function formatDuration(durationMs) {
 }
 
 function formatUsage(usage = {}, { label = "本轮", durationMs = null } = {}) {
-  const cacheHitTokens = Math.max(0, Number(usage.cacheHitTokens) || 0);
-  const cacheMissTokens = Math.max(0, Number(usage.cacheMissTokens) || 0);
+  const cacheUsage = foregroundCacheUsage(usage);
+  const cacheHitTokens = Math.max(0, Number(cacheUsage.cacheHitTokens) || 0);
+  const cacheMissTokens = Math.max(0, Number(cacheUsage.cacheMissTokens) || 0);
   const cachePromptTokens = cacheHitTokens + cacheMissTokens;
   const cacheRate = cachePromptTokens > 0
     ? `${Math.round((cacheHitTokens / cachePromptTokens) * 100)}%`
@@ -782,7 +783,18 @@ function formatUsage(usage = {}, { label = "本轮", durationMs = null } = {}) {
     `输出 ${formatTokenCount(usage.completionTokens)}`
   ];
   if (Number(usage.reasoningTokens) > 0) rows.push(`推理 ${formatTokenCount(usage.reasoningTokens)}`);
-  rows.push(`缓存命中 ${cacheRate}（${formatTokenCount(cacheHitTokens)}/${formatTokenCount(cachePromptTokens)}）`);
+  const cacheLabel = cacheUsage === usage ? "缓存命中" : "前台缓存";
+  rows.push(`${cacheLabel} ${cacheRate}（${formatTokenCount(cacheHitTokens)}/${formatTokenCount(cachePromptTokens)}）`);
+  const backgroundCalls = Math.max(0, Number(usage.background?.modelCalls) || 0);
+  if (backgroundCalls > 0) {
+    const backgroundHit = Math.max(0, Number(usage.background?.cacheHitTokens) || 0);
+    const backgroundMiss = Math.max(0, Number(usage.background?.cacheMissTokens) || 0);
+    const backgroundPrompt = backgroundHit + backgroundMiss;
+    const backgroundRate = backgroundPrompt > 0
+      ? `${Math.round((backgroundHit / backgroundPrompt) * 100)}%`
+      : "—";
+    rows.push(`后台 ${formatTokenCount(backgroundCalls)} 次，缓存 ${backgroundRate}`);
+  }
   if (durationMs !== null) rows.push(formatDuration(durationMs));
   return rows.join(" · ");
 }
@@ -816,11 +828,18 @@ function formatTuiCount(value) {
 }
 
 function formatTuiUsage(usage = {}) {
-  const hit = Math.max(0, Number(usage.cacheHitTokens) || 0);
-  const miss = Math.max(0, Number(usage.cacheMissTokens) || 0);
+  const cacheUsage = foregroundCacheUsage(usage);
+  const hit = Math.max(0, Number(cacheUsage.cacheHitTokens) || 0);
+  const miss = Math.max(0, Number(cacheUsage.cacheMissTokens) || 0);
   const total = hit + miss;
   const cache = total > 0 ? `${Math.round((hit / total) * 100)}%` : "—";
   return `↑${formatTuiCount(usage.promptTokens)} ↓${formatTuiCount(usage.completionTokens)} C${cache}`;
+}
+
+function foregroundCacheUsage(usage = {}) {
+  return usage.foreground && typeof usage.foreground === "object"
+    ? usage.foreground
+    : usage;
 }
 
 async function resolveExplicitOutputTargets(message = "") {

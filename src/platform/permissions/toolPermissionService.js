@@ -336,7 +336,7 @@ function describePermissionResource(name, args, effect, context) {
 function describeWorkspaceWriteResource(name, args, context) {
   const cwd = permissionWorkDir(context);
   if (name === "publish_artifact") return describeArtifactPublish(args, context, cwd);
-  if (name === "generate_visual") return describeVisualGeneration(args, cwd);
+  if (name === "generate_visual") return describeVisualGeneration(args, context, cwd);
   if (name === "generate_document") return describeDocumentGeneration(args, context, cwd);
 
   const rawPath = `${args?.path || args?.target || ""}`.trim();
@@ -356,7 +356,9 @@ function describeWorkspaceWriteResource(name, args, context) {
 }
 
 function describeArtifactPublish(args, context, cwd) {
-  const source = path.resolve(cwd, `${args?.path || ""}`.trim() || ".");
+  const artifactWorkDir = `${context?.artifactWorkDir || ""}`.trim();
+  const sourceRoot = artifactWorkDir || cwd;
+  const source = path.resolve(sourceRoot, `${args?.path || ""}`.trim() || ".");
   const taskDir = `${context?.taskDir || ""}`.trim();
   const finalDir = taskDir ? path.resolve(taskDir, "final") : "(当前任务受管 final 目录不可用)";
   const destination = taskDir ? path.join(finalDir, path.basename(source)) : finalDir;
@@ -364,16 +366,24 @@ function describeArtifactPublish(args, context, cwd) {
   const explicitTargets = Array.isArray(context?.explicitOutputTargets)
     ? context.explicitOutputTargets
     : [];
-  const automatic = !requested && explicitTargets.length === 1 ? explicitTargets[0] : null;
+  const defaultDestination = `${context?.defaultArtifactDestination || ""}`.trim();
+  const automatic = !requested && explicitTargets.length === 1
+    ? explicitTargets[0]
+    : (!requested && defaultDestination
+      ? { path: defaultDestination, kind: "directory" }
+      : null);
   const external = requested
     ? path.resolve(requested)
     : (automatic?.kind === "file"
       ? path.resolve(automatic.path)
       : (automatic?.path ? path.join(path.resolve(automatic.path), path.basename(source)) : ""));
+  const externalLabel = requested || explicitTargets.length
+    ? "用户指定位置"
+    : "绑定用户工作空间";
   const target = [
     `已检查来源：${source}`,
     `→ 受管最终成品：${destination}（同名时创建新版本）`,
-    external ? `→ 用户指定位置：${external}（同名时创建新版本）` : ""
+    external ? `→ ${externalLabel}：${external}（同名时创建新版本）` : ""
   ].filter(Boolean).join("\n");
   const exact = [
     "artifact_publish",
@@ -387,13 +397,16 @@ function describeArtifactPublish(args, context, cwd) {
     exact,
     target,
     external
-      ? "工具 publish_artifact 请求保留受管成品，并复制到用户明确指定的位置。"
+      ? (requested || explicitTargets.length
+        ? "工具 publish_artifact 请求保留受管成品，并复制到用户明确指定的位置。"
+        : "工具 publish_artifact 请求保留受管成品，并复制到当前任务绑定的用户工作空间。")
       : "工具 publish_artifact 请求把已检查候选发布到当前任务的受管成品区。"
   );
 }
 
-function describeVisualGeneration(args, cwd) {
-  const source = path.resolve(cwd, `${args?.path || ""}`.trim() || ".");
+function describeVisualGeneration(args, context, cwd) {
+  const productionDir = `${context?.artifactWorkDir || ""}`.trim() || cwd;
+  const source = path.resolve(productionDir, `${args?.path || ""}`.trim() || ".");
   const title = `${args?.title || ""}`.trim()
     || path.basename(source, path.extname(source))
     || "visual";
@@ -429,8 +442,8 @@ function describeDocumentGeneration(args, context, cwd) {
     latest_artifact: "当前任务最新已发布成品",
     task_history: "当前任务工作记录"
   }[sourceType] || "未指定来源";
-  const outputDir = `${context?.agentWorkDir || context?.workspacePath || ""}`.trim()
-    ? path.resolve(`${context.agentWorkDir || context.workspacePath}`)
+  const outputDir = `${context?.artifactWorkDir || context?.agentWorkDir || context?.workspacePath || ""}`.trim()
+    ? path.resolve(`${context.artifactWorkDir || context.agentWorkDir || context.workspacePath}`)
     : path.resolve(cwd);
   const output = `${args?.title || ""}`.trim()
     ? versionedOutputLabel(outputDir, `${args.title}`, format)

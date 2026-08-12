@@ -22,7 +22,7 @@ const {
   verifyWorkspaceIdentity
 } = require("../../../platform/projects/workspaceIdentity");
 const { validateGrantedLocalItem } = require("../../../platform/shared/localPathGrant");
-const { assertSafePathSegment } = require("../../../platform/shared/pathSafety");
+const { assertSafePathSegment, isPathInside } = require("../../../platform/shared/pathSafety");
 const { agentMemoryContext } = require("../../../platform/memory/memdir/agentMemoryProfile");
 const { GENERATE_DOCUMENT_TOOL } = require("./agent/generateDocumentTool");
 const { GENERATE_VISUAL_TOOL } = require("./agent/generateVisualTool");
@@ -97,7 +97,8 @@ const agentExecutionActions = {
     const registry = createAgentToolRegistry();
     const toolCtx = /** @type {any} */ (await this._buildAgentToolContext({
       projectId, taskId, runId, runDir, handoffDir, stepId, turnId,
-      fileReferences, explicitOutputTargets, explicitOpenTargets, registry
+      fileReferences, explicitOutputTargets, explicitOpenTargets, registry,
+      message: message || request.input || ""
     }));
     const memoryCacheScope = this.memoryCacheService?.taskScope?.(projectId, taskId) || "";
     if (memoryCacheScope) {
@@ -338,7 +339,8 @@ const agentExecutionActions = {
     fileReferences = [],
     explicitOutputTargets = [],
     explicitOpenTargets = [],
-    registry = null
+    registry = null,
+    message = ""
   } = {}) {
     const taskDir = projectId && taskId && this.projectService?.getTaskDir
       ? this.projectService.getTaskDir(projectId, taskId)
@@ -355,7 +357,9 @@ const agentExecutionActions = {
     const candidateDir = taskDir ? path.join(taskDir, ".candidates") : "";
     const todoDir = taskDir ? path.join(taskDir, "agent-state") : runDir;
     const agentWorkDir = workspacePath || candidateDir || runDir;
-    if (agentWorkDir && !workspacePath) await ensureDir(agentWorkDir);
+    if (candidateDir) await ensureTaskCandidateDir(taskDir, candidateDir);
+    else if (agentWorkDir) await ensureDir(agentWorkDir);
+    const agentWriteScope = [...new Set([agentWorkDir, candidateDir].filter(Boolean))];
     const memoryContextRoot = workspacePath
       || (projectId && this.projectService?.getProjectDir
         ? this.projectService.getProjectDir(projectId)
@@ -431,13 +435,18 @@ const agentExecutionActions = {
       currentStepId: stepId,
       turnId,
       skillWorkDir: agentWorkDir,
-      skillScopeAllow: agentWorkDir ? [agentWorkDir] : [],
+      skillScopeAllow: agentWriteScope,
+      skillReadScopeAllow: readScope,
+      skillWriteScopeAllow: agentWriteScope,
       agentWorkDir,
+      artifactWorkDir: candidateDir || agentWorkDir,
+      defaultArtifactDestination: workspacePath,
+      artifactPublishLimit: requestedArtifactLimit(message),
       workspacePath,
       agentScopeAllow: readScope,
       agentReadScopeAllow: readScope,
       agentShellReadScopeAllow: shellReadScope,
-      agentWriteScopeAllow: agentWorkDir ? [agentWorkDir] : [],
+      agentWriteScopeAllow: agentWriteScope,
       agentReadScopeDeny: hostReadDeny,
       agentWriteScopeDeny: hostWriteDeny,
       agentOpenScopeAllow: [...new Set([
@@ -470,6 +479,7 @@ const agentExecutionActions = {
       imageAssets: new Map(),
       artifactCandidates: new Map(),
       artifactInspections: new Map(),
+      publishedArtifactsThisTurn: new Map(),
       loadableCatalog: []
     };
   },
@@ -569,6 +579,36 @@ const agentExecutionActions = {
     return describeAgentStop(stopCode, maxRounds);
   }
 };
+
+function requestedArtifactLimit(message = "") {
+  const text = `${message || ""}`.toLowerCase();
+  const numeric = text.match(/(?:^|\D)([2-9])\s*(?:个|份|套|种)\s*(?:文件|格式|版本|成品|产物)/u);
+  if (numeric) return Math.min(4, Number(numeric[1]));
+  const formats = new Set();
+  if (/(?:pptx?|powerpoint|幻灯片|演示文稿|课件)/u.test(text)) formats.add("pptx");
+  if (/(?:docx?|word\s*文档)/u.test(text)) formats.add("docx");
+  if (/pdf/u.test(text)) formats.add("pdf");
+  if (/(?:xlsx?|excel\s*表格)/u.test(text)) formats.add("xlsx");
+  if (formats.size > 1) return Math.min(4, formats.size);
+  if (/(?:源文件.{0,8}(?:和|与|以及).{0,8}成品|成品.{0,8}(?:和|与|以及).{0,8}源文件)/u.test(text)) {
+    return Math.min(4, Math.max(2, formats.size + 1));
+  }
+  if (/(?:多个|多份|多种|分别交付|分别生成|同时交付|同时生成)/u.test(text)) {
+    return 4;
+  }
+  return 1;
+}
+
+async function ensureTaskCandidateDir(taskDir = "", candidateDir = "") {
+  await ensureDir(candidateDir);
+  const [taskRoot, candidateRoot] = await Promise.all([
+    fsp.realpath(taskDir),
+    fsp.realpath(candidateDir)
+  ]);
+  if (candidateRoot === taskRoot || !isPathInside(taskRoot, candidateRoot)) {
+    throw new Error("内部制作区经符号链接越出当前任务。");
+  }
+}
 
 function buildAgentToolTrace(result, traceRows, maxRounds, toolNames) {
   return {

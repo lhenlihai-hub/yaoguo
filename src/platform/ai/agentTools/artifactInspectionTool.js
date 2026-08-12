@@ -39,7 +39,7 @@ const INSPECT_ARTIFACT_TOOL_SCHEMA = {
         path: {
           type: "string",
           minLength: 1,
-          description: "候选文件路径。相对路径按当前 Agent 工作空间解析。"
+          description: "候选文件路径。相对路径优先按宿主管理的内部制作区解析。"
         }
       },
       required: ["path"],
@@ -87,12 +87,26 @@ const inspectArtifactTool = {
 
 async function resolveScopedArtifactPath(requestedPath, ctx = {}) {
   const requested = `${requestedPath || ""}`.trim();
-  const workDir = `${ctx.agentWorkDir || ctx.taskDir || ""}`.trim();
+  const workDir = `${ctx.artifactWorkDir || ctx.agentWorkDir || ctx.taskDir || ""}`.trim();
   if (!requested || !workDir) throw new Error("缺少当前任务工作空间或文件路径。");
-  const resolved = path.resolve(path.isAbsolute(requested) ? requested : path.join(workDir, requested));
-  const canonical = await fsp.realpath(resolved);
-  const roots = await canonicalRoots([ctx.agentWorkDir]);
-  const registeredCandidate = candidateRegistry(ctx).has(canonical);
+  const requestedCandidates = path.isAbsolute(requested)
+    ? [requested]
+    : [...new Set([
+      ctx.artifactWorkDir ? path.join(ctx.artifactWorkDir, requested) : "",
+      ctx.agentWorkDir ? path.join(ctx.agentWorkDir, requested) : "",
+      path.join(workDir, requested)
+    ].filter(Boolean))];
+  const canonicalCandidates = [];
+  for (const item of requestedCandidates) {
+    const canonical = await fsp.realpath(path.resolve(item)).catch(() => "");
+    if (canonical && !canonicalCandidates.includes(canonical)) canonicalCandidates.push(canonical);
+  }
+  if (!canonicalCandidates.length) throw new Error(`候选文件不存在：${requested}`);
+  const registered = candidateRegistry(ctx);
+  const canonical = canonicalCandidates.find((item) => registered.has(item))
+    || canonicalCandidates[0];
+  const roots = await canonicalRoots([ctx.artifactWorkDir, ctx.agentWorkDir]);
+  const registeredCandidate = registered.has(canonical);
   if (!registeredCandidate && !roots.some((root) => isPathInside(root, canonical))) {
     throw new Error("只能检查当前 Agent 工作空间内的文件或生成工具登记的候选。");
   }

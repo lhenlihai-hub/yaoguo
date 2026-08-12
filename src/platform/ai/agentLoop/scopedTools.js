@@ -380,12 +380,16 @@ async function createScopedTools(options = {}) {
     shellSandbox,
     openExternal: options.openExternal
   });
+  const artifactWorkDir = `${options.artifactWorkDir || ""}`.trim()
+    ? canonicalExistingPath(options.artifactWorkDir)
+    : "";
   const safeEnvironment = {
     PATH: systemCommandPath(cwd) || "/usr/bin:/bin",
     LANG: process.env.LANG || "C.UTF-8",
     LC_ALL: process.env.LC_ALL || "",
     GIT_CONFIG_NOSYSTEM: "1",
-    TMPDIR: shellSandbox?.tempDir || process.env.TMPDIR || ""
+    TMPDIR: shellSandbox?.tempDir || process.env.TMPDIR || "",
+    YAOGUO_ARTIFACT_DIR: artifactWorkDir
   };
   const rawTools = [
     agentCore.createReadTool(),
@@ -403,14 +407,20 @@ async function createScopedTools(options = {}) {
     })] : [])
   ].filter((tool) => requestedToolNames.includes(tool.name));
   const tools = rawTools.map((tool) => {
-    const declaredTool = withDeliverableDeclaration(tool);
+    const declaredTool = withArtifactWorkspaceGuidance(
+      withDeliverableDeclaration(tool),
+      Boolean(artifactWorkDir)
+    );
     return {
       ...declaredTool,
       label: declaredTool.label || declaredTool.name,
       executionMode: BASE_TOOL_POLICIES[declaredTool.name]?.parallelSafe ? "parallel" : "sequential",
-      execute: (toolCallId, args, signal, onUpdate) => (
-        declaredTool.execute(toolCallId, args, signal, onUpdate, { env })
-      )
+      execute: (toolCallId, args, signal, onUpdate) => {
+        const executionEnv = selectExecutionEnvironment(env, args?.workspace, artifactWorkDir);
+        const executionArgs = { ...(args || {}) };
+        delete executionArgs.workspace;
+        return declaredTool.execute(toolCallId, executionArgs, signal, onUpdate, { env: executionEnv });
+      }
     };
   });
   Object.defineProperty(tools, "cleanup", {
@@ -424,6 +434,40 @@ async function createScopedTools(options = {}) {
     }
   });
   return tools;
+}
+
+function withArtifactWorkspaceGuidance(tool, artifactWorkspaceAvailable = false) {
+  const name = `${tool?.name || ""}`;
+  if (!artifactWorkspaceAvailable || !["write", "edit", "bash"].includes(name)) return tool;
+  const parameters = tool.parameters || { type: "object", properties: {}, required: [] };
+  return {
+    ...tool,
+    description: [
+      `${tool.description || ""}`,
+      "Set workspace=project for normal source-code or user workspace changes.",
+      "Set workspace=artifact for document, presentation, spreadsheet, image, or webpage production, including source drafts, generator scripts, dependency manifests, previews, caches, and intermediate files. Artifact-relative paths and bash commands then run inside the host-managed artifact workspace."
+    ].filter(Boolean).join(" "),
+    parameters: {
+      ...parameters,
+      properties: {
+        ...(parameters.properties || {}),
+        workspace: {
+          type: "string",
+          enum: ["project", "artifact"],
+          description: "project modifies the normal workspace; artifact isolates final-file production and every supporting file in the host-managed artifact workspace."
+        }
+      },
+      required: [...new Set([...(parameters.required || []), "workspace"])]
+    }
+  };
+}
+
+function selectExecutionEnvironment(env, workspace = "", artifactWorkDir = "") {
+  if (`${workspace || ""}` !== "artifact") return env;
+  if (!artifactWorkDir) throw new Error("当前任务没有可用的内部制作区。");
+  const scoped = Object.create(env);
+  scoped.cwd = artifactWorkDir;
+  return scoped;
 }
 
 function withDeliverableDeclaration(tool) {

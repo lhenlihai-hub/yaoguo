@@ -36,6 +36,7 @@ class TokenLedger {
       runId: entry.runId || "",
       stepId: entry.stepId || "",
       taskType: entry.taskType || "default",
+      internalCall: entry.internalCall === true,
       title: entry.title || "",
       providerId: entry.providerId || "",
       model: entry.model || "",
@@ -192,11 +193,18 @@ function emptyUsageSummary() {
     cacheMissTokens: 0,
     totalTokens: 0,
     cacheHitRate: 0,
-    invalidRows: 0
+    invalidRows: 0,
+    foreground: emptyUsageBucket(),
+    background: emptyUsageBucket()
   };
 }
 
 function addUsageRow(summary, row = {}) {
+  addUsageCounters(summary, row);
+  addUsageCounters(isBackgroundCall(row) ? summary.background : summary.foreground, row);
+}
+
+function addUsageCounters(summary, row = {}) {
   summary.modelCalls += 1;
   if (`${row.status || ""}` === "completed") summary.completedCalls += 1;
   else summary.failedCalls += 1;
@@ -208,12 +216,39 @@ function addUsageRow(summary, row = {}) {
 }
 
 function finalizeUsageSummary(summary) {
+  finalizeUsageBucket(summary.foreground);
+  finalizeUsageBucket(summary.background);
+  return finalizeUsageBucket(summary);
+}
+
+function emptyUsageBucket() {
+  return {
+    modelCalls: 0,
+    completedCalls: 0,
+    failedCalls: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    reasoningTokens: 0,
+    cacheHitTokens: 0,
+    cacheMissTokens: 0,
+    totalTokens: 0,
+    cacheHitRate: 0
+  };
+}
+
+function finalizeUsageBucket(summary) {
   summary.totalTokens = summary.promptTokens + summary.completionTokens;
   const cachePromptTokens = summary.cacheHitTokens + summary.cacheMissTokens;
   summary.cacheHitRate = cachePromptTokens > 0
     ? Number((summary.cacheHitTokens / cachePromptTokens).toFixed(4))
     : 0;
   return summary;
+}
+
+function isBackgroundCall(row = {}) {
+  if (row.internalCall === true) return true;
+  if (row.internalCall === false) return false;
+  return ["memory", "title"].includes(`${row.taskType || ""}`);
 }
 
 module.exports = {

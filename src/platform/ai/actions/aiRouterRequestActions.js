@@ -121,6 +121,7 @@ module.exports = {
       id: args.callId,
       createdAt: args.startedAt.toISOString(),
       taskType: args.taskType,
+      internalCall: args.internalCall === true,
       title: args.title,
       providerId: args.provider.id,
       providerName: args.provider.name || args.provider.id,

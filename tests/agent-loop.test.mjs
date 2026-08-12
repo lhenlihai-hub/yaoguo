@@ -186,6 +186,7 @@ test("Pi 基础工具按声明映射原生并行模式，写入与命令保持�
     const tools = await createScopedTools({
       cwd: workDir,
       roots: [workDir],
+      artifactWorkDir: workDir,
       shellSandboxFactory: testShellSandboxFactory
     });
     const modes = Object.fromEntries(tools.map((tool) => [tool.name, tool.executionMode]));
@@ -200,6 +201,53 @@ test("Pi 基础工具按声明映射原生并行模式，写入与命令保持�
       assert.ok(tool.parameters.required.includes("deliverable"));
       assert.equal(tool.parameters.properties.deliverable.type, "boolean");
     }
+    for (const name of ["write", "edit", "bash"]) {
+      const tool = tools.find((item) => item.name === name);
+      assert.ok(tool.parameters.required.includes("workspace"));
+      assert.deepEqual(tool.parameters.properties.workspace.enum, ["project", "artifact"]);
+    }
+    await tools.cleanup();
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
+test("Pi 基础工具按 workspace 契约隔离项目区与制作区", async () => {
+  const workDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-project-zone-"));
+  const artifactDir = path.join(workDir, ".artifact-zone");
+  try {
+    await mkdir(artifactDir, { recursive: true });
+    const tools = await createScopedTools({
+      cwd: workDir,
+      readRoots: [workDir, artifactDir],
+      writeRoots: [workDir, artifactDir],
+      artifactWorkDir: artifactDir,
+      shellSandboxFactory: testShellSandboxFactory
+    });
+    const write = tools.find((tool) => tool.name === "write");
+    const bash = tools.find((tool) => tool.name === "bash");
+
+    await write.execute("artifact-write", {
+      workspace: "artifact",
+      path: "source.md",
+      content: "# 内部源稿",
+      deliverable: false
+    });
+    await bash.execute("artifact-bash", {
+      workspace: "artifact",
+      command: "printf artifact > generated.txt"
+    });
+    await write.execute("project-write", {
+      workspace: "project",
+      path: "README.local.md",
+      content: "# 项目文件",
+      deliverable: false
+    });
+
+    assert.equal(await readFile(path.join(artifactDir, "source.md"), "utf8"), "# 内部源稿");
+    assert.equal(await readFile(path.join(artifactDir, "generated.txt"), "utf8"), "artifact");
+    assert.equal(await readFile(path.join(workDir, "README.local.md"), "utf8"), "# 项目文件");
+    await assert.rejects(readFile(path.join(workDir, "source.md"), "utf8"), /ENOENT/);
     await tools.cleanup();
   } finally {
     await rm(workDir, { recursive: true, force: true });
@@ -691,6 +739,7 @@ test("未绑定工作空间时，完整文件读取权限不能把外部参考�
       aiRouter: scriptedRouter([
         {
           toolCalls: [call("agent-edit-reference", "edit", {
+            workspace: "project",
             path: target,
             edits: [{ oldText: "参考原文", newText: "不应写入" }],
             deliverable: false
@@ -745,7 +794,7 @@ test("基础文件工具没有固定单任务次数上限，十次 bash 后仍�
   }
 });
 
-test("工作绑定工作空间后，Agent cwd 与文件技能交付目录都切到工作空间", async () => {
+test("普通任务保持工作空间 cwd，并额外授权受管制作区", async () => {
   const taskDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-task-storage-"));
   const workspacePath = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-workspace-"));
   const replacementPath = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-workspace-rebound-"));
@@ -773,9 +822,13 @@ test("工作绑定工作空间后，Agent cwd 与文件技能交付目录都切�
 
     assert.equal(toolCtx.agentWorkDir, workspaceIdentity.canonicalPath);
     assert.equal(toolCtx.skillWorkDir, workspaceIdentity.canonicalPath);
+    assert.equal(toolCtx.artifactWorkDir, path.join(taskDir, ".candidates"));
     assert.ok(toolCtx.agentReadScopeAllow.includes(workspaceIdentity.canonicalPath));
     assert.ok(toolCtx.agentReadScopeAllow.includes(taskDir));
-    assert.deepEqual(toolCtx.agentWriteScopeAllow, [workspaceIdentity.canonicalPath]);
+    assert.deepEqual(toolCtx.agentWriteScopeAllow, [
+      workspaceIdentity.canonicalPath,
+      path.join(taskDir, ".candidates")
+    ]);
 
     await rm(workspaceIdentity.canonicalPath, { recursive: true, force: true });
     await symlink(replacementPath, workspaceIdentity.canonicalPath);
@@ -790,6 +843,84 @@ test("工作绑定工作空间后，Agent cwd 与文件技能交付目录都切�
     await rm(taskDir, { recursive: true, force: true });
     await rm(workspacePath, { recursive: true, force: true });
     await rm(replacementPath, { recursive: true, force: true });
+  }
+});
+
+test("制作任务保持单一 Agent cwd，由工具契约选择内部制作区", async () => {
+  const taskDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-artifact-task-"));
+  const workspacePath = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-artifact-workspace-"));
+  try {
+    const workspaceIdentity = await captureWorkspaceIdentity(workspacePath);
+    const engine = {
+      ...agentExecutionActions,
+      settingsService: {
+        get: async () => ({ permissions: { fileSystem: { fullAccess: false } } })
+      },
+      projectService: {
+        getTaskDir() { return taskDir; },
+        async getTask() {
+          return { workspacePath: workspaceIdentity.canonicalPath, workspaceIdentity };
+        }
+      }
+    };
+    const toolCtx = await engine._buildAgentToolContext({
+      projectId: "project-test",
+      taskId: "task-test",
+      message: "帮我制作一份红楼梦公开课 PPT"
+    });
+    const candidateDir = path.join(taskDir, ".candidates");
+
+    assert.equal(toolCtx.agentWorkDir, workspaceIdentity.canonicalPath);
+    assert.equal(toolCtx.artifactWorkDir, candidateDir);
+    assert.equal(toolCtx.defaultArtifactDestination, workspaceIdentity.canonicalPath);
+    assert.equal(toolCtx.artifactPublishLimit, 1);
+    assert.deepEqual(toolCtx.agentWriteScopeAllow, [workspaceIdentity.canonicalPath, candidateDir]);
+
+    const multiToolCtx = await engine._buildAgentToolContext({
+      projectId: "project-test",
+      taskId: "task-test",
+      message: "同时生成 PPT 和 PDF 两种成品"
+    });
+    assert.equal(multiToolCtx.artifactPublishLimit, 2);
+    const contentCountToolCtx = await engine._buildAgentToolContext({
+      projectId: "project-test",
+      taskId: "task-test",
+      message: "做一份包含 3 个章节的 PPT"
+    });
+    assert.equal(contentCountToolCtx.artifactPublishLimit, 1);
+    const sourceToolCtx = await engine._buildAgentToolContext({
+      projectId: "project-test",
+      taskId: "task-test",
+      message: "请同时交付 PPT 成品与源文件"
+    });
+    assert.equal(sourceToolCtx.artifactPublishLimit, 2);
+  } finally {
+    await rm(taskDir, { recursive: true, force: true });
+    await rm(workspacePath, { recursive: true, force: true });
+  }
+});
+
+test("Agent 工具上下文拒绝经符号链接越出任务的制作区", async () => {
+  const taskDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-artifact-link-task-"));
+  const outsideDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-artifact-link-outside-"));
+  try {
+    await symlink(outsideDir, path.join(taskDir, ".candidates"));
+    const engine = {
+      ...agentExecutionActions,
+      settingsService: { get: async () => ({ permissions: { fileSystem: { fullAccess: false } } }) },
+      projectService: {
+        getTaskDir() { return taskDir; },
+        async getTask() { return { workspacePath: "" }; }
+      }
+    };
+
+    await assert.rejects(
+      () => engine._buildAgentToolContext({ projectId: "project-test", taskId: "task-test" }),
+      /内部制作区经符号链接越出当前任务/
+    );
+  } finally {
+    await rm(taskDir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
   }
 });
 

@@ -221,6 +221,27 @@ test("发布授权卡片显示已检查来源到受管 final 的实际边界", (
   assert.match(request.boundary, /普通文件修改授权不包含生成、发布或废弃/);
 });
 
+test("发布授权卡片显示制作区来源与绑定工作空间的自动交付", () => {
+  const taskDir = path.join(tmpdir(), "yaoguo-publish-default-task");
+  const artifactWorkDir = path.join(taskDir, ".candidates");
+  const workspaceDir = path.join(tmpdir(), "yaoguo-publish-bound-workspace");
+  const request = describeToolPermission(toolInput("publish_artifact", {
+    path: "course.pptx",
+    inspectionId: "inspection_1234567890abcdef12345678",
+    title: "公开课课件"
+  }, "workspace_write", {
+    agentWorkDir: workspaceDir,
+    artifactWorkDir,
+    defaultArtifactDestination: workspaceDir,
+    taskDir
+  }));
+
+  assert.match(request.summary, /绑定的用户工作空间/);
+  assert.ok(request.target.includes(path.join(artifactWorkDir, "course.pptx")));
+  assert.ok(request.target.includes(path.join(taskDir, "final", "course.pptx")));
+  assert.ok(request.target.includes(path.join(workspaceDir, "course.pptx")));
+});
+
 test("生成工具展示来源与候选输出，精确摘要覆盖真实生成语义且不泄露正文", () => {
   const workDir = path.join(tmpdir(), "yaoguo-generation-work");
   const taskDir = path.join(tmpdir(), "yaoguo-generation-task");
@@ -249,6 +270,25 @@ test("生成工具展示来源与候选输出，精确摘要覆盖真实生成�
   assert.match(document.target, /安全降级的 DOCX/);
   assert.equal(document.target.includes("不得出现在授权界面的私密正文"), false);
   assert.equal(document.summary.includes("不得出现在授权界面的私密正文"), false);
+});
+
+test("生成授权卡把视觉与文档候选定位到内部制作区", () => {
+  const workDir = path.join(tmpdir(), "yaoguo-generation-project-zone");
+  const artifactWorkDir = path.join(tmpdir(), "yaoguo-generation-artifact-zone");
+  const context = { agentWorkDir: workDir, artifactWorkDir };
+  const visual = describeToolPermission(toolInput("generate_visual", {
+    path: "slides.html",
+    medium: "deck"
+  }, "workspace_write", context));
+  const document = describeToolPermission(toolInput("generate_document", {
+    format: "pptx",
+    source: "prepared_content",
+    content: "# 课件"
+  }, "workspace_write", context));
+
+  assert.ok(visual.target.includes(path.join(artifactWorkDir, "slides.html")));
+  assert.ok(document.target.includes(artifactWorkDir));
+  assert.equal(visual.target.includes(path.join(workDir, "slides.html")), false);
 });
 
 test("单次、会话和永久授权都只复用精确资源", async () => {

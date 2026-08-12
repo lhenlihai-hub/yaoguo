@@ -24,6 +24,7 @@ class YaoguoTerminalUi {
     this.theme = createTuiTheme();
     this.terminal = options.terminal || new toolkit.ProcessTerminal();
     this.tui = new toolkit.TUI(this.terminal, true);
+    this.tui.setClearOnShrink?.(false);
     this.workspacePath = `${options.workspacePath || process.cwd()}`;
     this.taskTitle = `${options.taskTitle || "当前会话"}`;
     this.modelLabel = `${options.modelLabel || "Pro"}`;
@@ -353,7 +354,6 @@ class YaoguoTerminalUi {
     if (!label) return;
     this.setActivity(label);
     if (!stream || stream.finished) return;
-    stream.label.setText(ansi.blueBright(ansi.bold(label)));
     const key = `${activity.phase || activity.toolName || label}`;
     const now = Date.now();
     const target = `${activity.target || ""}`.trim();
@@ -383,7 +383,7 @@ class YaoguoTerminalUi {
     });
     const running = [...stream.activities.values()].map((row) => {
       const target = row.target ? `\n  ${ansi.muted(row.target)}` : "";
-      return `${ansi.blueBright("↳")} ${row.label} · ${formatElapsed(Date.now() - row.startedAt)}${target}`;
+      return `${ansi.blueBright("↳")} ${row.label}${target}`;
     });
     stream.workflow.setText([...completed, ...running].join("\n"));
   }
@@ -393,21 +393,17 @@ class YaoguoTerminalUi {
       stream?.reasoningTitle?.setText("");
       return;
     }
-    const active = stream.thinkingSegmentStartedAt ? Date.now() - stream.thinkingSegmentStartedAt : 0;
-    const duration = Math.max(0, stream.thinkingDurationMs + active);
-    stream.reasoningTitle.setText(ansi.muted(`思考过程 · ${formatElapsed(duration)}`));
+    const title = stream.finished
+      ? `思考过程 · ${formatElapsed(stream.thinkingDurationMs)}`
+      : "思考过程";
+    stream.reasoningTitle.setText(ansi.muted(title));
   }
 
   startStatusTimer() {
     if (this.statusTimer) return;
     this.statusTimer = setInterval(() => {
-      if (this.activeStream && !this.activeStream.finished) {
-        this.renderWorkflow(this.activeStream);
-        this.renderReasoningTitle(this.activeStream);
-      }
       this.renderStatus();
-      this.tui.requestRender();
-    }, 250);
+    }, 1000);
     this.statusTimer.unref?.();
   }
 
@@ -426,7 +422,8 @@ class YaoguoTerminalUi {
       this.tui,
       (text) => ansi.blueBright(text),
       (text) => ansi.muted(text),
-      label
+      label,
+      { frames: ["◆"], intervalMs: 1000 }
     );
     const index = Math.max(0, this.tui.children.indexOf(this.editor));
     this.tui.children.splice(index, 0, this.loader);

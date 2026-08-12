@@ -75,6 +75,21 @@ test("CLI 格式化本轮 token、推理与缓存命中，并识别内置统计�
   assert.equal(isUsageCommand("/tokens"), true);
   assert.equal(isUsageCommand("usage"), false);
   assert.equal(formatTuiUsage(usage), "↑12k ↓678 C75%");
+  const sessionUsageWithBackground = {
+    ...usage,
+    modelCalls: 5,
+    foreground: { ...usage, modelCalls: 3 },
+    background: {
+      modelCalls: 2,
+      cacheHitTokens: 100,
+      cacheMissTokens: 900
+    }
+  };
+  assert.equal(
+    formatUsage(sessionUsageWithBackground, { label: "会话累计" }),
+    "会话累计 5 次模型调用 · 输入 12,345 · 输出 678 · 推理 120 · 前台缓存 75%（9,000/12,000） · 后台 2 次，缓存 10%"
+  );
+  assert.equal(formatTuiUsage(sessionUsageWithBackground), "↑12k ↓678 C75%");
   assert.deepEqual(await sessionUsage({
     platformKernel: {
       tokenLedger: {
