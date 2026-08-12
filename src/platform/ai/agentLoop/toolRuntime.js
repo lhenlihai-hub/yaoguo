@@ -27,6 +27,10 @@ const { seedReferenceObservations } = require("../agentTools/referenceObservatio
 const { registerDeclaredCandidate } = require("../agentTools/artifactInspectionTool");
 const { resolveToolCapabilityPolicy } = require("../agentTools/toolCapabilityPolicy");
 const { validateMemoryWrite } = require("../../memory/memdir/memdirPolicy");
+const {
+  policyWithPathGrant,
+  resolveRequestedPathAccess
+} = require("./externalPathAccess");
 
 class AgentToolRuntime {
   /** @param {any} options @param {any} executionBudget */
@@ -48,6 +52,8 @@ class AgentToolRuntime {
     this.activeSkillActions = new Set();
     this.activeSkillActionPolicies = new Map();
     this.blockedByCallId = new Map();
+    this.normalizedArgsByCallId = new Map();
+    this.authorizedPoliciesByCallId = new Map();
     this.rawCallsById = new Map();
     this.callIndexById = new Map();
     this.nextCallIndex = 0;
@@ -62,7 +68,7 @@ class AgentToolRuntime {
     this.peakActiveTokens = 0;
     this.rootRequestTokens = 0;
     this.tools = [];
-    /** @type {any[] & { cleanup?: () => Promise<void> }} */
+    /** @type {any[] & { cleanup?: () => Promise<void>, grantPath?: (grant:any) => void }} */
     this.baseTools = [];
     this.advertisedNames = new Set();
     this.ownsResultStore = !this.toolCtx.contextResultStore;
@@ -235,7 +241,22 @@ class AgentToolRuntime {
       };
     }
     const callId = `${context?.toolCall?.id || ""}`;
-    const policy = this.policyFor(name, args);
+    let pathGrant = null;
+    if (!workspaceRejection) {
+      try {
+        const access = await resolveRequestedPathAccess(name, args, this.toolCtx);
+        args = access.args;
+        pathGrant = access.grant;
+      } catch (error) {
+        workspaceRejection = {
+          code: "TOOL_INPUT_INVALID",
+          error: `${error?.message || error}`
+        };
+      }
+    }
+    const policy = policyWithPathGrant(this.policyFor(name, args), name, pathGrant);
+    this.normalizedArgsByCallId.set(callId, args);
+    this.authorizedPoliciesByCallId.set(callId, policy);
     this.callsThisRound += 1;
     const quotaKey = toolQuotaKey(name, args);
     const quotaCount = (this.callsByQuota.get(quotaKey) || 0) + 1;
@@ -284,7 +305,10 @@ class AgentToolRuntime {
     } else if (!rejection) {
       rejection = await this.authorize(name, args, policy, signal);
     }
-    if (!rejection) return undefined;
+    if (!rejection) {
+      this.mountApprovedPath(pathGrant);
+      return undefined;
+    }
     this.rejectedCalls += 1;
     this.blockedByCallId.set(callId, { name, args, policy, rejection });
     return { block: true, reason: `${rejection.code}: ${rejection.error}` };
@@ -330,7 +354,10 @@ class AgentToolRuntime {
   async authorize(name, args, policy, signal = null) {
     const hook = this.options.authorizeToolCall || this.toolCtx.authorizeToolCall;
     if (typeof hook !== "function") {
-      if (this.options.requireToolAuthorization !== true || policy?.effect === "read") return null;
+      if (
+        policy?.requiresUserConfirm !== true
+        && (this.options.requireToolAuthorization !== true || policy?.effect === "read")
+      ) return null;
       return {
         code: "TOOL_PERMISSION_UNAVAILABLE",
         error: `工具 ${name} 需要宿主授权，但权限服务不可用。`
@@ -356,28 +383,34 @@ class AgentToolRuntime {
   }
 
   executeCustomTool(name, toolCallId, args, signal) {
+    const callId = `${toolCallId || ""}`;
+    const executionArgs = this.normalizedArgsByCallId.get(callId) || args;
     return this.executeWithPolicy({
       name,
       toolCallId,
-      args,
+      args: executionArgs,
+      policy: this.authorizedPoliciesByCallId.get(callId),
       signal,
       execute: async () => {
-        if (this.isDelivery(name)) return this.executeDelivery(name, toolCallId, args);
+        if (this.isDelivery(name)) return this.executeDelivery(name, toolCallId, executionArgs);
         if (name === "read_context_result") {
-          return executeReadContextResult(args || {}, this.loopToolCtx);
+          return executeReadContextResult(executionArgs || {}, this.loopToolCtx);
         }
-        return this.registry.execute(name, args, this.loopToolCtx);
+        return this.registry.execute(name, executionArgs, this.loopToolCtx);
       },
       returnsSafeResult: this.isDelivery(name)
     });
   }
 
   executeBaseTool(tool, toolCallId, args, signal, onUpdate) {
-    const executionArgs = resolveBaseToolWorkspaceArgs(args, tool.name, this.toolCtx);
+    const callId = `${toolCallId || ""}`;
+    const executionArgs = this.normalizedArgsByCallId.get(callId)
+      || resolveBaseToolWorkspaceArgs(args, tool.name, this.toolCtx);
     return this.executeWithPolicy({
       name: tool.name,
       toolCallId,
       args: executionArgs,
+      policy: this.authorizedPoliciesByCallId.get(callId),
       signal,
       execute: async () => {
         const value = await tool.execute(toolCallId, executionArgs, signal, onUpdate);
@@ -420,7 +453,7 @@ class AgentToolRuntime {
   }
 
   async executeWithPolicy(item) {
-    const policy = this.policyFor(item.name, item.args);
+    const policy = item.policy || this.policyFor(item.name, item.args);
     const fingerprint = executionFingerprint(item.name, item.args, policy, this.mutationEpochs);
     if (policy.repeat !== "rerun" && this.executionCache.has(fingerprint)) {
       if (policy.repeat === "reuse") {
@@ -488,7 +521,10 @@ class AgentToolRuntime {
   async afterToolCall(context) {
     const callId = `${context?.toolCall?.id || ""}`;
     const pending = this.pendingExecutions.get(callId);
-    if (!pending) return undefined;
+    if (!pending) {
+      this.clearCallAuthorization(callId);
+      return undefined;
+    }
     this.pendingExecutions.delete(callId);
     const finalized = await this.finalizeExecution(
       pending.item,
@@ -496,10 +532,28 @@ class AgentToolRuntime {
       pending.safe,
       pending.reusedExecution
     );
-    return {
-      ...finalized,
-      isError: !isSuccessfulResult(pending.safe)
-    };
+    this.clearCallAuthorization(callId);
+    return { ...finalized, isError: !isSuccessfulResult(pending.safe) };
+  }
+
+  mountApprovedPath(grant) {
+    if (!grant) return;
+    if (grant.open) {
+      if (!Array.isArray(this.toolCtx.agentOpenExactAllow)) {
+        this.toolCtx.agentOpenExactAllow = [];
+        this.loopToolCtx.agentOpenExactAllow = this.toolCtx.agentOpenExactAllow;
+      }
+      if (!this.toolCtx.agentOpenExactAllow.includes(grant.path)) {
+        this.toolCtx.agentOpenExactAllow.push(grant.path);
+      }
+      return;
+    }
+    this.baseTools?.grantPath?.(grant);
+  }
+
+  clearCallAuthorization(callId) {
+    this.normalizedArgsByCallId.delete(callId);
+    this.authorizedPoliciesByCallId.delete(callId);
   }
 
   async finalizeExecution(item, policy, safe, reusedExecution) {
@@ -890,10 +944,14 @@ function resolveBaseToolWorkspaceArgs(args = {}, toolName = "", toolCtx = {}) {
   if (workspace === "artifact" && !`${toolCtx.artifactWorkDir || ""}`.trim()) {
     throw new Error("当前任务没有可用的内部制作区。");
   }
-  if (!["write", "edit"].includes(toolName) || path.isAbsolute(`${args.path || ""}`)) return args;
   const workDir = workspace === "artifact"
     ? `${toolCtx.artifactWorkDir || ""}`.trim()
     : `${toolCtx.agentWorkDir || ""}`.trim();
+  if (toolName === "bash" && `${args.cwd || ""}`.trim() && !path.isAbsolute(`${args.cwd}`)) {
+    if (!workDir) throw new Error("当前任务没有可用的工作区。");
+    return { ...args, cwd: path.resolve(workDir, `${args.cwd}`) };
+  }
+  if (!["write", "edit"].includes(toolName) || path.isAbsolute(`${args.path || ""}`)) return args;
   if (!workDir) throw new Error("当前任务没有可用的工作区。");
   return { ...args, path: path.resolve(workDir, `${args.path || ""}`) };
 }
@@ -928,7 +986,7 @@ function toolQuotaKey(name, args) {
 }
 
 function executionFingerprint(name, args, policy, mutationEpochs) {
-  const epoch = policy.effect === "read"
+  const epoch = ["read", "filesystem_read_external"].includes(policy.effect)
     ? (mutationEpochs.get(policy.namespace) || 0)
     : 0;
   return `${name}:${epoch}:${stableSerialize(args)}`;
@@ -949,7 +1007,12 @@ function duplicateSideEffectResult(name) {
 }
 
 function isSuccessfulMutation(policy, safe) {
-  return policyEffects(policy).some((effect) => !["read", "network_read", "model_compute"].includes(effect))
+  return policyEffects(policy).some((effect) => ![
+    "read",
+    "filesystem_read_external",
+    "network_read",
+    "model_compute"
+  ].includes(effect))
     && isSuccessfulResult(safe);
 }
 
@@ -1053,7 +1116,7 @@ function traceTarget(name, args = {}) {
     const openUrl = parseExternalOpenCommand(args?.command);
     return {
       kind: openUrl ? "external_url" : "shell_command",
-      value: openUrl || `${args?.command || ""}`
+      value: openUrl || `${args?.cwd || ""}\n${args?.command || ""}`
     };
   }
   const destination = `${args?.destination || ""}`.trim();

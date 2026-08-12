@@ -16,13 +16,21 @@ const SAFE_EFFECTS = new Set(["read", "model_compute", "agent_state_write"]);
 const MAX_PERMISSION_TARGET_CHARS = 4096;
 const permissionPersistenceExecutor = new KeyedSerialExecutor();
 const EFFECT_PRESENTATION = Object.freeze({
+  filesystem_read_external: {
+    label: "读取工作空间外路径",
+    boundary: "精确授权只允许读取界面中的文件或文件夹；“该类型全部允许”会放行后续工作空间外读取。宿主控制目录、符号链接和路径类型安全边界始终生效。"
+  },
+  filesystem_write_external: {
+    label: "修改工作空间外路径",
+    boundary: "精确授权只允许修改界面中的单个文件；“该类型全部允许”会放行后续工作空间外写入。宿主控制目录、符号链接、硬链接和路径类型安全边界始终生效。"
+  },
   workspace_write: {
     label: "修改工作空间",
     boundary: "精确授权只对界面中的操作及资源生效；普通文件修改授权不包含生成、发布或废弃。“该类型全部允许”会放行所有工作空间写入。宿主控制目录和路径边界始终生效。"
   },
   command_execute: {
     label: "执行系统命令",
-    boundary: "允许一次、本次任务和始终允许只对界面中的完整命令生效；“该类型全部允许”会放行所有命令执行。命令仍受工作空间文件范围、无网络、无提权和无外部应用控制边界限制。"
+    boundary: "允许一次、本次任务和始终允许只对界面中的完整命令与工作目录生效；“该类型全部允许”会放行所有命令执行。命令仍受已授权文件范围、无网络、无提权和无外部应用控制边界限制。"
   },
   network_read: {
     label: "读取外部网络",
@@ -275,8 +283,13 @@ function describePermissionResource(name, args, effect, context) {
   const normalizedName = `${name || "unknown"}`;
   if (effect === "command_execute") {
     const command = normalizedCommand(args?.command);
-    const cwd = `${context?.agentWorkDir || context?.workspacePath || context?.taskDir || process.cwd()}`;
-    return permissionResource("command", `${path.resolve(cwd)}\n${command}`, command);
+    const base = `${context?.agentWorkDir || context?.workspacePath || context?.taskDir || process.cwd()}`;
+    const cwd = path.resolve(base, `${args?.cwd || ""}`.trim() || ".");
+    return permissionResource(
+      "command",
+      `${cwd}\n${command}`,
+      `工作目录：${cwd}\n命令：${command}`
+    );
   }
   if (effect === "external_open") {
     const url = externalOpenUrl(args?.command) || canonicalUrl(args?.url);
@@ -294,6 +307,17 @@ function describePermissionResource(name, args, effect, context) {
   }
   if (effect === "workspace_write") {
     return describeWorkspaceWriteResource(normalizedName, args, context);
+  }
+  if (["filesystem_read_external", "filesystem_write_external"].includes(effect)) {
+    const cwd = permissionWorkDir(context);
+    const target = path.resolve(cwd, `${args?.path || ""}`.trim() || ".");
+    const read = effect === "filesystem_read_external";
+    return permissionResource(
+      "path",
+      `${read ? "external_read" : "external_write"}\n${target}`,
+      target,
+      `工具 ${normalizedName} 请求${read ? "读取" : "修改"}工作空间外的本地路径。`
+    );
   }
   if (effect === "network_read") {
     const url = canonicalUrl(args?.url);

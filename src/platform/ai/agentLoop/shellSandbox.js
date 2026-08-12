@@ -22,6 +22,7 @@ const APPLE_DEVELOPER_RUNTIME_SUBDIRS = [
   "Library/Frameworks",
   "Library/PrivateFrameworks"
 ];
+const HOST_CONTROL_DIRECTORY_NAMES = [".git", ".agents", ".codex"];
 
 let sandboxRuntimePromise = null;
 let activeAppleDeveloperDirCache;
@@ -95,6 +96,20 @@ class ShellSandbox {
     this.runtime = await loadSandboxRuntime();
     await this.initializeProcessSupervisor();
     return this;
+  }
+
+  grantPath(target, { read = false, write = false } = {}) {
+    const absolute = canonicalDirectory(target) || path.resolve(`${target || ""}`);
+    if (read && !this.readRoots.includes(absolute)) this.readRoots.push(absolute);
+    if (write && !this.writeRoots.includes(absolute)) {
+      this.writeRoots.push(absolute);
+      for (const name of HOST_CONTROL_DIRECTORY_NAMES) {
+        const protectedPath = path.join(absolute, name);
+        if (!this.protectedWriteRoots.includes(protectedPath)) {
+          this.protectedWriteRoots.push(protectedPath);
+        }
+      }
+    }
   }
 
   async initializeProcessSupervisor() {

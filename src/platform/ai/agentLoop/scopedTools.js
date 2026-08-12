@@ -59,6 +59,7 @@ class ScopedNodeExecutionEnv {
       (Array.isArray(options.writeRoots) ? options.writeRoots : legacyRoots)
         .map(canonicalExistingPath)
     )];
+    this.writeAnchors = new Map();
     this.roots = this.readRoots;
     this.deniedReadRoots = uniqueResolvedPaths(options.deniedReadRoots || []);
     this.protectedWriteRoots = [...new Set(
@@ -67,6 +68,19 @@ class ScopedNodeExecutionEnv {
     )];
     this.shellSandbox = options.shellSandbox || null;
     this.openExternal = typeof options.openExternal === "function" ? options.openExternal : null;
+  }
+
+  grantPath(target, { read = false, write = false, anchor = "" } = {}) {
+    const absolute = canonicalGrantPath(target);
+    if (!absolute || isFileSystemRoot(absolute)) {
+      throw new Error("不能把整个文件系统根目录授权给 Agent。");
+    }
+    // Pi resolves every file-tool path through absolutePath before dispatching
+    // the concrete read/write method. A write grant therefore also needs read
+    // visibility for that exact target; the host still authorizes each tool call.
+    if ((read || write) && !this.readRoots.includes(absolute)) this.readRoots.push(absolute);
+    if (write && !this.writeRoots.includes(absolute)) this.writeRoots.push(absolute);
+    if (write && anchor) this.writeAnchors.set(absolute, canonicalExistingPath(anchor));
   }
 
   async guardPath(input, allowMissing = false, access = "read") {
@@ -86,7 +100,10 @@ class ScopedNodeExecutionEnv {
       if (!allowMissing || error?.code !== "ENOENT") throw error;
       const parent = await this.closestExistingParent(path.dirname(absolute));
       const canonicalParent = await fsp.realpath(parent);
-      if (!roots.some((root) => isWithin(root, canonicalParent))) {
+      const unresolvedTail = path.relative(parent, absolute);
+      const canonicalTarget = path.resolve(canonicalParent, unresolvedTail);
+      const scopedRoot = roots.find((root) => isWithin(root, canonicalTarget));
+      if (!scopedRoot) {
         throw new Error(`路径经符号链接越出 Agent 工作区：${input}`);
       }
       if (access === "read" && this.isDeniedReadPath(canonicalParent)) {
@@ -95,7 +112,12 @@ class ScopedNodeExecutionEnv {
       if (access === "write" && this.isProtectedWritePath(canonicalParent)) {
         throw new Error(`Agent 不可修改宿主控制目录：${input}`);
       }
-      return path.resolve(canonicalParent, path.relative(parent, absolute));
+      if (access === "write") {
+        await fsp.mkdir(path.dirname(canonicalTarget), { recursive: true });
+        await this.assertWriteAnchor(canonicalTarget, input);
+        await this.assertUnlinkedWritePath(canonicalTarget, input);
+      }
+      return canonicalTarget;
     }
     if (!roots.some((root) => isWithin(root, canonical))) {
       throw new Error(`路径经符号链接越出 Agent 工作区：${input}`);
@@ -107,6 +129,7 @@ class ScopedNodeExecutionEnv {
       throw new Error(`Agent 不可修改宿主控制目录：${input}`);
     }
     if (access === "write") {
+      await this.assertWriteAnchor(canonical, input);
       const stat = await fsp.stat(canonical);
       if (stat.isFile() && stat.nlink > 1) {
         throw new Error(`Agent 不可修改具有多个硬链接的文件：${input}`);
@@ -117,8 +140,9 @@ class ScopedNodeExecutionEnv {
   }
 
   async assertUnlinkedWritePath(absolute, input) {
-    const root = this.writeRoots.find((candidate) => isWithin(candidate, absolute));
-    if (!root) return;
+    const grantedRoot = this.writeRoots.find((candidate) => isWithin(candidate, absolute));
+    if (!grantedRoot) return;
+    const root = this.writeAnchors.get(grantedRoot) || grantedRoot;
     let current = root;
     for (const segment of path.relative(root, absolute).split(path.sep).filter(Boolean)) {
       current = path.join(current, segment);
@@ -133,8 +157,21 @@ class ScopedNodeExecutionEnv {
     }
   }
 
+  async assertWriteAnchor(target, input) {
+    const grantedRoot = this.writeRoots.find((candidate) => isWithin(candidate, target));
+    const anchor = grantedRoot ? this.writeAnchors.get(grantedRoot) : "";
+    if (!anchor) return;
+    const canonicalAnchor = await fsp.realpath(anchor).catch(() => "");
+    if (!canonicalAnchor || canonicalAnchor !== anchor || !isWithin(anchor, target)) {
+      throw new Error(`Agent 写入授权路径已变更：${input}`);
+    }
+  }
+
   isProtectedWritePath(target) {
     if (this.protectedWriteRoots.some((root) => isWithin(root, target))) return true;
+    if (path.resolve(target).split(path.sep).some((segment) => (
+      HOST_CONTROL_DIRECTORY_NAMES.has(segment)
+    ))) return true;
     return this.writeRoots.some((root) => {
       if (!isWithin(root, target)) return false;
       const relative = path.relative(root, target);
@@ -407,21 +444,36 @@ async function createScopedTools(options = {}) {
     })] : [])
   ].filter((tool) => requestedToolNames.includes(tool.name));
   const tools = rawTools.map((tool) => {
-    const declaredTool = withArtifactWorkspaceGuidance(
-      withDeliverableDeclaration(tool),
-      Boolean(artifactWorkDir)
+    const declaredTool = withBashWorkingDirectoryGuidance(
+      withArtifactWorkspaceGuidance(
+        withDeliverableDeclaration(tool),
+        Boolean(artifactWorkDir)
+      )
     );
     return {
       ...declaredTool,
       label: declaredTool.label || declaredTool.name,
       executionMode: BASE_TOOL_POLICIES[declaredTool.name]?.parallelSafe ? "parallel" : "sequential",
       execute: (toolCallId, args, signal, onUpdate) => {
-        const executionEnv = selectExecutionEnvironment(env, args?.workspace, artifactWorkDir);
+        const executionEnv = selectExecutionEnvironment(
+          env,
+          args?.workspace,
+          artifactWorkDir,
+          args?.cwd
+        );
         const executionArgs = { ...(args || {}) };
         delete executionArgs.workspace;
+        delete executionArgs.cwd;
         return declaredTool.execute(toolCallId, executionArgs, signal, onUpdate, { env: executionEnv });
       }
     };
+  });
+  Object.defineProperty(tools, "grantPath", {
+    enumerable: false,
+    value: (grant = {}) => {
+      env.grantPath(grant.path, grant);
+      if (grant.shell) shellSandbox?.grantPath?.(grant.path, grant);
+    }
   });
   Object.defineProperty(tools, "cleanup", {
     enumerable: false,
@@ -462,11 +514,39 @@ function withArtifactWorkspaceGuidance(tool, artifactWorkspaceAvailable = false)
   };
 }
 
-function selectExecutionEnvironment(env, workspace = "", artifactWorkDir = "") {
-  if (`${workspace || ""}` !== "artifact") return env;
-  if (!artifactWorkDir) throw new Error("当前任务没有可用的内部制作区。");
+function withBashWorkingDirectoryGuidance(tool) {
+  if (`${tool?.name || ""}` !== "bash") return tool;
+  const parameters = tool.parameters || { type: "object", properties: {}, required: [] };
+  return {
+    ...tool,
+    description: [
+      `${tool.description || ""}`,
+      "Set cwd to an absolute directory when the command must work on a folder outside the current workspace. The host will request permission for that exact command and directory before execution."
+    ].filter(Boolean).join(" "),
+    parameters: {
+      ...parameters,
+      properties: {
+        ...(parameters.properties || {}),
+        cwd: {
+          type: "string",
+          minLength: 1,
+          description: "Optional working directory. Use an absolute external directory to trigger an exact host permission request."
+        }
+      }
+    }
+  };
+}
+
+function selectExecutionEnvironment(env, workspace = "", artifactWorkDir = "", requestedCwd = "") {
+  let baseCwd = env.cwd;
+  if (`${workspace || ""}` === "artifact") {
+    if (!artifactWorkDir) throw new Error("当前任务没有可用的内部制作区。");
+    baseCwd = artifactWorkDir;
+  }
+  const explicitCwd = `${requestedCwd || ""}`.trim();
+  if (!explicitCwd && baseCwd === env.cwd) return env;
   const scoped = Object.create(env);
-  scoped.cwd = artifactWorkDir;
+  scoped.cwd = explicitCwd ? path.resolve(baseCwd, explicitCwd) : baseCwd;
   return scoped;
 }
 
@@ -521,6 +601,27 @@ function canonicalExistingPath(value) {
     return fs.realpathSync.native(absolute);
   } catch {
     return absolute;
+  }
+}
+
+function canonicalGrantPath(value) {
+  const absolute = path.resolve(`${value || ""}`);
+  try {
+    return fs.realpathSync.native(absolute);
+  } catch (error) {
+    if (error?.code !== "ENOENT") return absolute;
+  }
+  let current = path.dirname(absolute);
+  while (true) {
+    try {
+      const canonicalParent = fs.realpathSync.native(current);
+      return path.resolve(canonicalParent, path.relative(current, absolute));
+    } catch (error) {
+      if (error?.code !== "ENOENT") return absolute;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return absolute;
+    current = parent;
   }
 }
 

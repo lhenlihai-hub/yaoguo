@@ -8,6 +8,7 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const { AgentToolRegistry } = require("../src/platform/ai/agentTools/agentToolRegistry.js");
+const { openLocalPathTool } = require("../src/platform/ai/agentTools/openLocalPathTool.js");
 const { runToolLoop: runToolLoopRaw } = require("../src/platform/ai/agentLoop/agentLoop.js");
 const { AgentToolRuntime } = require("../src/platform/ai/agentLoop/toolRuntime.js");
 const {
@@ -28,8 +29,14 @@ const {
 const agentExecutionActions = require("../src/application/workflows/mixins/agentExecutionActions.js");
 const { isToolAvailable } = require("../src/platform/ai/agentTools/toolCapabilityPolicy.js");
 
-const testShellSandboxFactory = async () => ({
+const testShellSandboxFactory = async (options = {}) => ({
   tempDir: tmpdir(),
+  readRoots: [...(options.readRoots || [])],
+  writeRoots: [...(options.writeRoots || [])],
+  grantPath(target, grant = {}) {
+    if (grant.read && !this.readRoots.includes(target)) this.readRoots.push(target);
+    if (grant.write && !this.writeRoots.includes(target)) this.writeRoots.push(target);
+  },
   wrap: async (command) => command,
   cleanupAfterCommand() {},
   async cleanup() {}
@@ -209,6 +216,9 @@ test("Pi 基础工具按声明映射原生并行模式，写入与命令保持�
       assert.ok(tool.parameters.required.includes("workspace"));
       assert.deepEqual(tool.parameters.properties.workspace.enum, ["project", "artifact"]);
     }
+    const bash = tools.find((item) => item.name === "bash");
+    assert.equal(bash.parameters.properties.cwd.type, "string");
+    assert.match(bash.description, /request permission for that exact command and directory/);
     await tools.cleanup();
   } finally {
     await rm(workDir, { recursive: true, force: true });
@@ -408,7 +418,7 @@ test("完整文件系统访问开启后，通用 Agent 可直接修改工作区�
   }
 });
 
-test("完整文件系统访问关闭时，通用 Agent 不能修改工作区外文件", async () => {
+test("工作空间外写入被拒绝时不执行文件修改", async () => {
   const workDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-denied-workspace-"));
   const externalDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-denied-external-"));
   const target = path.join(externalDir, "local.txt");
@@ -432,7 +442,14 @@ test("完整文件系统访问关闭时，通用 Agent 不能修改工作区外�
         runDir: workDir,
         agentWorkDir: workDir,
         agentScopeAllow: [workDir],
-        fullFileSystemAccess: false
+        fullFileSystemAccess: false,
+        authorizeToolCall: async ({ policy }) => ({
+          allow: false,
+          code: "TOOL_APPROVAL_REQUIRED",
+          error: policy.effect === "filesystem_write_external"
+            ? "用户未授权该外部路径。"
+            : "用户未授权。"
+        })
       },
       runTaskArgs: { taskType: "agent", input: `修改 ${target}` },
       maxRounds: 4
@@ -440,8 +457,137 @@ test("完整文件系统访问关闭时，通用 Agent 不能修改工作区外�
 
     assert.equal(result.text, "用户未授权，因此没有修改文件。");
     assert.equal(result.toolCalls[0].result.ok, false);
-    assert.match(result.toolCalls[0].result.error, /越出 Agent 工作区/);
+    assert.equal(result.toolCalls[0].effect, "filesystem_write_external");
+    assert.match(result.toolCalls[0].result.error, /用户未授权该外部路径/);
     assert.equal(await readFile(target, "utf8"), "保持原样");
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+    await rm(externalDir, { recursive: true, force: true });
+  }
+});
+
+test("工作空间外文件获得精确授权后可读取和编辑", async () => {
+  const workDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-external-work-"));
+  const externalDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-external-files-"));
+  const target = path.join(externalDir, "local.txt");
+  const authorizationEffects = [];
+  try {
+    await writeFile(target, "外部原文", "utf8");
+    const result = await runToolLoop({
+      aiRouter: scriptedRouter([
+        { toolCalls: [call("external-read", "read", { path: target })] },
+        { toolCalls: [call("external-edit", "edit", {
+          path: target,
+          edits: [{ oldText: "外部原文", newText: "已授权修改" }],
+          deliverable: false
+        })] },
+        { content: "工作空间外文件已完成。" }
+      ]),
+      registry: new AgentToolRegistry(),
+      toolNames: [],
+      toolCtx: {
+        runDir: workDir,
+        agentWorkDir: workDir,
+        agentScopeAllow: [workDir],
+        authorizeToolCall: async ({ policy }) => {
+          authorizationEffects.push(policy.effect);
+          return { allow: true };
+        }
+      },
+      runTaskArgs: { taskType: "agent", input: `读取并修改 ${target}` },
+      maxRounds: 5
+    });
+
+    assert.equal(result.text, "工作空间外文件已完成。");
+    assert.deepEqual(authorizationEffects, [
+      "filesystem_read_external",
+      "filesystem_write_external"
+    ]);
+    assert.deepEqual(result.toolCalls.map((item) => item.effect), authorizationEffects);
+    assert.ok(result.toolCalls.every((item) => item.result.ok), JSON.stringify(result.toolCalls, null, 2));
+    assert.equal(await readFile(target, "utf8"), "已授权修改");
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+    await rm(externalDir, { recursive: true, force: true });
+  }
+});
+
+test("工作空间外新文件只在获得精确写入授权后创建", async () => {
+  const workDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-external-new-work-"));
+  const externalDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-external-new-target-"));
+  const target = path.join(externalDir, "nested", "created.txt");
+  let approvedTarget = "";
+  try {
+    const result = await runToolLoop({
+      aiRouter: scriptedRouter([
+        { toolCalls: [call("external-write-new", "write", {
+          path: target,
+          content: "created",
+          deliverable: false
+        })] },
+        { content: "外部新文件已创建。" }
+      ]),
+      registry: new AgentToolRegistry(),
+      toolNames: [],
+      toolCtx: {
+        runDir: workDir,
+        agentWorkDir: workDir,
+        agentScopeAllow: [workDir],
+        authorizeToolCall: async ({ args, policy }) => {
+          assert.equal(policy.effect, "filesystem_write_external");
+          approvedTarget = args.path;
+          return { allow: true };
+        }
+      },
+      runTaskArgs: { taskType: "agent", input: `创建 ${target}` },
+      maxRounds: 4
+    });
+
+    assert.equal(approvedTarget, path.join(await realpath(externalDir), "nested", "created.txt"));
+    assert.equal(
+      result.toolCalls[0].result.ok,
+      true,
+      result.toolCalls[0].result.error || JSON.stringify(result.toolCalls[0], null, 2)
+    );
+    assert.equal(await readFile(target, "utf8"), "created");
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+    await rm(externalDir, { recursive: true, force: true });
+  }
+});
+
+test("bash 获得精确命令授权后可在工作空间外 cwd 执行", async () => {
+  const workDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-bash-work-"));
+  const externalDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-bash-external-"));
+  let authorization = null;
+  try {
+    const result = await runToolLoop({
+      aiRouter: scriptedRouter([
+        { toolCalls: [call("external-bash", "bash", {
+          command: "printf external-ok > result.txt",
+          cwd: externalDir
+        })] },
+        { content: "外部目录命令已完成。" }
+      ]),
+      registry: new AgentToolRegistry(),
+      toolNames: [],
+      toolCtx: {
+        runDir: workDir,
+        agentWorkDir: workDir,
+        agentScopeAllow: [workDir],
+        authorizeToolCall: async (input) => {
+          authorization = input;
+          return { allow: true };
+        }
+      },
+      runTaskArgs: { taskType: "agent", input: `在 ${externalDir} 执行命令` },
+      maxRounds: 4
+    });
+
+    assert.equal(authorization.policy.effect, "command_execute");
+    assert.equal(authorization.args.cwd, await realpath(externalDir));
+    assert.equal(result.toolCalls[0].result.ok, true, JSON.stringify(result.toolCalls[0], null, 2));
+    assert.equal(await readFile(path.join(externalDir, "result.txt"), "utf8"), "external-ok");
   } finally {
     await rm(workDir, { recursive: true, force: true });
     await rm(externalDir, { recursive: true, force: true });
@@ -478,6 +624,48 @@ test("Agent 文件工具不能修改 .git/.agents/.codex 宿主控制目录", as
     assert.equal(await readFile(path.join(workDir, ".git", "config"), "utf8"), "original");
   } finally {
     await rm(workDir, { recursive: true, force: true });
+  }
+});
+
+test("工作空间外的 .git 宿主控制目录不会触发可放行授权", async () => {
+  const workDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-external-protected-work-"));
+  const externalDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-external-protected-target-"));
+  const target = path.join(externalDir, ".git", "config");
+  let approvals = 0;
+  try {
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, "original", "utf8");
+    const result = await runToolLoop({
+      aiRouter: scriptedRouter([
+        { toolCalls: [call("external-protected-write", "write", {
+          path: target,
+          content: "tampered",
+          deliverable: false
+        })] },
+        { content: "宿主控制目录未修改。" }
+      ]),
+      registry: new AgentToolRegistry(),
+      toolNames: [],
+      toolCtx: {
+        runDir: workDir,
+        agentWorkDir: workDir,
+        agentScopeAllow: [workDir],
+        authorizeToolCall: async () => {
+          approvals += 1;
+          return { allow: true };
+        }
+      },
+      runTaskArgs: { taskType: "agent", input: `修改 ${target}` },
+      maxRounds: 4
+    });
+
+    assert.equal(result.toolCalls[0].result.ok, false);
+    assert.match(result.toolCalls[0].result.error, /宿主控制目录/);
+    assert.equal(approvals, 0);
+    assert.equal(await readFile(target, "utf8"), "original");
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+    await rm(externalDir, { recursive: true, force: true });
   }
 });
 
@@ -717,7 +905,45 @@ test("本地打开能力只在宿主注入时进入 Agent，并保留独立路�
   }
 });
 
-test("未绑定工作空间时，完整文件读取权限不能把外部参考目录变成写入位置", async () => {
+test("本地打开工具获得授权后可打开工作空间外文件夹", async () => {
+  const workDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-open-work-"));
+  const externalDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-open-external-"));
+  const opened = [];
+  const registry = new AgentToolRegistry().register(openLocalPathTool);
+  try {
+    const result = await runToolLoop({
+      aiRouter: scriptedRouter([
+        { toolCalls: [call("external-open", "open_local_path", { path: externalDir })] },
+        { content: "外部文件夹已打开。" }
+      ]),
+      registry,
+      toolNames: ["open_local_path"],
+      toolCtx: {
+        runDir: workDir,
+        agentWorkDir: workDir,
+        agentScopeAllow: [workDir],
+        agentOpenScopeAllow: [workDir],
+        agentOpenExactAllow: [],
+        openLocalPath: async (target, options) => {
+          opened.push({ target, kind: options.kind });
+          return { ok: true };
+        },
+        authorizeToolCall: async ({ policy }) => ({ allow: policy.effect === "local_open" })
+      },
+      runTaskArgs: { taskType: "agent", input: `打开 ${externalDir}` },
+      maxRounds: 4
+    });
+
+    assert.equal(result.toolCalls[0].effect, "local_open");
+    assert.equal(result.toolCalls[0].result.ok, true, JSON.stringify(result.toolCalls[0], null, 2));
+    assert.deepEqual(opened, [{ target: await realpath(externalDir), kind: "directory" }]);
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+    await rm(externalDir, { recursive: true, force: true });
+  }
+});
+
+test("外部参考路径不会自动变成写入位置", async () => {
   const taskDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-internal-output-"));
   const externalDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-readonly-reference-"));
   const target = path.join(externalDir, "reference.md");
@@ -731,6 +957,13 @@ test("未绑定工作空间时，完整文件读取权限不能把外部参考�
       projectService: {
         getTaskDir() { return taskDir; },
         async getTask() { return { workspacePath: "" }; }
+      },
+      toolPermissionService: {
+        authorize: async ({ policy }) => ({
+          allow: policy.effect !== "filesystem_write_external",
+          code: "TOOL_APPROVAL_REQUIRED",
+          error: "用户未授权修改外部参考。"
+        })
       }
     };
     const toolCtx = await engine._buildAgentToolContext({
@@ -758,7 +991,8 @@ test("未绑定工作空间时，完整文件读取权限不能把外部参考�
     });
 
     assert.equal(result.toolCalls[0].result.ok, false);
-    assert.match(result.toolCalls[0].result.error, /越出 Agent 工作区/);
+    assert.equal(result.toolCalls[0].effect, "filesystem_write_external");
+    assert.match(result.toolCalls[0].result.error, /未授权修改外部参考/);
     assert.equal(await readFile(target, "utf8"), "# 参考原文");
   } finally {
     await rm(taskDir, { recursive: true, force: true });
@@ -1007,6 +1241,35 @@ test("Pi 文件工具固定使用校验后的 canonical path，不沿符号链�
   } finally {
     await rm(workDir, { recursive: true, force: true });
     await rm(externalDir, { recursive: true, force: true });
+  }
+});
+
+test("外部写入授权后若父级被替换为符号链接则拒绝执行", async () => {
+  const workDir = await mkdtemp(path.join(tmpdir(), "yaoguo-external-race-work-"));
+  const externalDir = await mkdtemp(path.join(tmpdir(), "yaoguo-external-race-target-"));
+  const redirectedDir = await mkdtemp(path.join(tmpdir(), "yaoguo-external-race-outside-"));
+  try {
+    const target = path.join(externalDir, "nested", "result.txt");
+    const env = new ScopedNodeExecutionEnv({}, {
+      cwd: workDir,
+      readRoots: [workDir],
+      writeRoots: [workDir]
+    });
+    env.grantPath(target, {
+      read: true,
+      write: true,
+      anchor: await realpath(externalDir)
+    });
+    await symlink(redirectedDir, path.join(externalDir, "nested"));
+
+    await assert.rejects(
+      env.guardPath(target, true, "write"),
+      /不可通过符号链接|授权路径已变更|越出 Agent 工作区/
+    );
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+    await rm(externalDir, { recursive: true, force: true });
+    await rm(redirectedDir, { recursive: true, force: true });
   }
 });
 

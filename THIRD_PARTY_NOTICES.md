@@ -24,5 +24,6 @@
 - Copyright: Copyright 2025 Anthropic
 
 腰果直接调用上游公开运行时，在 macOS 使用 Seatbelt、在 Linux 使用 bubblewrap 约束 Agent 命令；没有修改安装在 `node_modules` 中的上游源码。
+它只负责 `bash` 子进程的操作系统级隔离；Agent 循环与基础工具仍由 Pi Agent Core 提供，模型与产品权限系统不依赖 Anthropic 服务。
 
 完整许可证见 `licenses/anthropic-sandbox-runtime-Apache-2.0.txt`。

@@ -124,6 +124,69 @@ test("本地路径打开使用独立授权 effect，并展示规范绝对路径"
   assert.match(permission.summary, /系统应用打开本地文件或文件夹/);
 });
 
+test("工作空间外读写使用独立精确路径授权", () => {
+  const target = path.join(tmpdir(), "yaoguo-external-permission", "report.md");
+  const read = describeToolPermission(toolInput(
+    "read",
+    { path: target },
+    "filesystem_read_external"
+  ));
+  const write = describeToolPermission(toolInput(
+    "edit",
+    { path: target },
+    "filesystem_write_external"
+  ));
+
+  assert.equal(read.resourceKind, "path");
+  assert.equal(read.target, target);
+  assert.match(read.summary, /读取工作空间外/);
+  assert.match(read.boundary, /精确授权/);
+  assert.equal(write.resourceKind, "path");
+  assert.equal(write.target, target);
+  assert.match(write.summary, /修改工作空间外/);
+  assert.notEqual(read.grantKey, write.grantKey);
+});
+
+test("All agree 自动同意工作空间外读写授权", async () => {
+  let prompts = 0;
+  const service = new ToolPermissionService({
+    settingsService: {
+      get: async () => ({ permissions: { agent: { mode: "allow", rules: {} } } })
+    },
+    requestApproval: async () => {
+      prompts += 1;
+      return { decision: "deny" };
+    }
+  });
+  const target = path.join(tmpdir(), "yaoguo-all-agree-external.md");
+  const read = await service.authorize(toolInput(
+    "read",
+    { path: target },
+    "filesystem_read_external"
+  ));
+  const write = await service.authorize(toolInput(
+    "write",
+    { path: target },
+    "filesystem_write_external"
+  ));
+
+  assert.equal(read.source, "settings");
+  assert.equal(write.source, "settings");
+  assert.equal(prompts, 0);
+});
+
+test("bash 授权同时绑定完整命令与外部工作目录", () => {
+  const cwd = path.join(tmpdir(), "yaoguo-external-repository");
+  const request = describeToolPermission(toolInput(
+    "bash",
+    { command: "git status --short", cwd },
+    "command_execute"
+  ));
+  assert.match(request.target, new RegExp(`工作目录：${cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.match(request.target, /命令：git status --short/);
+  assert.match(request.boundary, /完整命令与工作目录/);
+});
+
 test("本地参考读取保持安全 read，只有真实联网参数请求 network_read", () => {
   const searchPolicy = getToolCapabilityPolicy("search_reference");
   const readPolicy = getToolCapabilityPolicy("read_reference");
@@ -498,7 +561,8 @@ test("命令与网址授权显示完整精确目标，持久化键仍只保存�
     { command },
     "command_execute"
   ));
-  assert.equal(commandRequest.target, command);
+  assert.match(commandRequest.target, /工作目录：/);
+  assert.ok(commandRequest.target.endsWith(`命令：${command}`));
   assert.ok(commandRequest.target.length < MAX_PERMISSION_TARGET_CHARS);
 
   const first = describeToolPermission(toolInput(
