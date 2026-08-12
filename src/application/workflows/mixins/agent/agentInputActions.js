@@ -68,7 +68,8 @@ async submitAgentInput(payload = {}, options = {}) {
 
 async _runAgentInputTurn(payload = {}, options = {}) {
   const {
-    message, projectId, taskId, runId, turnId, fileReferences = [], explicitOutputTargets = []
+    message, projectId, taskId, runId, turnId, fileReferences = [],
+    explicitOutputTargets = [], explicitOpenTargets = []
   } = payload;
   let artifacts = [];
   try {
@@ -84,6 +85,7 @@ async _runAgentInputTurn(payload = {}, options = {}) {
       turnId,
       fileReferences,
       explicitOutputTargets,
+      explicitOpenTargets,
       signal: options.signal || null,
       onToken: options.onToken,
       onReasoning: options.onReasoning,
@@ -224,6 +226,7 @@ const AGENT_TOOL_LABELS = {
   inspect_artifact: ["正在检查候选文件", "候选文件检查完成"],
   publish_artifact: ["正在登记最终成品", "最终成品已登记"],
   discard_artifact_candidate: ["正在废弃候选文件", "候选文件已废弃"],
+  open_local_path: ["正在打开本地路径", "本地路径已打开"],
   generate_document: ["正在生成文件", "文件生成完成"],
   generate_visual: ["正在生成视觉成品", "视觉成品生成完成"]
 };

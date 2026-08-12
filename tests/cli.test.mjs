@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -9,6 +10,7 @@ const require = createRequire(import.meta.url);
 const {
   parseArgs,
   resolveDataRoot,
+  openLocalPathWithSystem,
   helpText,
   createApprovalHandler,
   ensureModelAvailable,
@@ -27,6 +29,7 @@ const {
   createNewSession,
   runResumeMenu,
   resolveExplicitOutputTargets,
+  resolveExplicitOpenTargets,
   runTurn,
   runInteractive
 } = require("../src/cli/cli.js");
@@ -95,6 +98,31 @@ test("CLI 数据目录优先使用参数，其次环境变量，最后使用用�
   assert.match(helpText(), /All agree/);
   assert.doesNotMatch(helpText(), /^  \/tokens/m);
   assert.match(helpText(), /Shift\+Enter/);
+});
+
+test("CLI 本地打开宿主使用系统命令与参数数组，不经过 shell", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "yaoguo-cli-open-"));
+  const file = path.join(root, "带 空格.md");
+  const calls = [];
+  try {
+    await writeFile(file, "ok", "utf8");
+    const result = await openLocalPathWithSystem(file, {
+      platform: "darwin",
+      spawnProcess(command, args, options) {
+        calls.push({ command, args, options });
+        const child = new EventEmitter();
+        child.unref = () => {};
+        queueMicrotask(() => child.emit("spawn"));
+        return child;
+      }
+    });
+    assert.equal(result.ok, true);
+    assert.equal(calls[0].command, "open");
+    assert.deepEqual(calls[0].args, [await realpath(file)]);
+    assert.deepEqual(calls[0].options, { detached: true, stdio: "ignore" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("CLI 非交互默认拒绝授权，--yes 只授权本次进程", async () => {
@@ -317,6 +345,41 @@ test("CLI /resume 可打开历史会话并恢复对话与 usage", async () => {
   assert.deepEqual(events[2], ["usage", "↑1.2k ↓80 C—"]);
 });
 
+test("CLI /resume 用首条用户消息修复旧默认会话名", async () => {
+  const tasks = [
+    { id: "current", title: "新任务", workspacePath: "/tmp/work", createdAt: "2026-08-12T00:00:00.000Z" },
+    { id: "legacy", title: "work · 新会话", workspacePath: "/tmp/work", createdAt: "2026-08-11T00:00:00.000Z" }
+  ];
+  const updated = [];
+  let dialog = null;
+  const services = {
+    projectService: {
+      async listTasks() { return tasks; },
+      async updateTask(projectId, taskId, patch) {
+        updated.push([projectId, taskId, patch.title]);
+        return { ...tasks.find((task) => task.id === taskId), ...patch };
+      }
+    },
+    workflowEngine: {
+      async listAgentMessages({ taskId }) {
+        return taskId === "legacy"
+          ? [{ role: "user", content: "帮我优化支付错误处理" }]
+          : [];
+      }
+    }
+  };
+  await runResumeMenu(services, {
+    ui: {
+      async choose(options) {
+        dialog = options;
+        return null;
+      }
+    }
+  }, { project: { id: "terminal" }, task: tasks[0], workspacePath: "/tmp/work" });
+  assert.equal(dialog.items.find((item) => item.value === "legacy").label, "优化支付错误处理");
+  assert.deepEqual(updated, [["terminal", "legacy", "优化支付错误处理"]]);
+});
+
 test("CLI /resume 只删除选中会话数据，不改变当前工作空间", async () => {
   const tasks = [
     { id: "current", title: "当前", workspacePath: "/tmp/work" },
@@ -354,7 +417,7 @@ test("CLI /new 创建并切换到真实的新会话", async () => {
       },
       async bindTaskWorkspace(projectId, taskId, workspacePath) {
         events.push(["bind", projectId, taskId, workspacePath]);
-        return { id: taskId, title: "work · 新会话", workspacePath };
+        return { id: taskId, title: "新任务", workspacePath };
       }
     }
   };
@@ -375,6 +438,10 @@ test("CLI /new 创建并切换到真实的新会话", async () => {
   assert.notEqual(session.task.id, "current");
   assert.equal(session.workspacePath, "/tmp/work");
   assert.equal(events.some((event) => event[0] === "bind"), true);
+  assert.deepEqual(events.find((event) => event[0] === "create"), ["create", "terminal", "新任务"]);
+  assert.deepEqual(events.find((event) => event[0] === "session"), [
+    "session", { workspacePath: "/tmp/work", taskTitle: "新任务" }
+  ]);
   assert.deepEqual(events.find((event) => event[0] === "history"), ["history", []]);
   assert.deepEqual(events.at(-1), ["success", "已创建新会话。"]);
 });
@@ -403,6 +470,26 @@ test("CLI 从自然语言中确认用户明确指定的输出目录", async () =
   }
 });
 
+test("CLI 只从明确打开语义中确认本地打开目标", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "yaoguo-cli-open-target-"));
+  const requested = path.join(root, "测试目录");
+  try {
+    await mkdir(requested);
+    assert.deepEqual(
+      await resolveExplicitOpenTargets(`请打开 ${requested}`),
+      [{ path: await realpath(requested), kind: "directory" }]
+    );
+    assert.deepEqual(
+      await resolveExplicitOpenTargets(`请打开一下这个文件夹 ${requested}`),
+      [{ path: await realpath(requested), kind: "directory" }]
+    );
+    assert.deepEqual(await resolveExplicitOpenTargets(`读取 ${requested} 并总结`), []);
+    assert.deepEqual(await resolveExplicitOpenTargets(`把文件保存到 ${requested}`), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("CLI TUI 将模型 token 流、成品与 usage 交给同一对话界面", async () => {
   const events = [];
   const stream = { text: "" };
@@ -420,6 +507,7 @@ test("CLI TUI 将模型 token 流、成品与 usage 交给同一对话界面", a
   const result = await runTurn({
     workflowEngine: {
       async submitAgentInput(_payload, options) {
+        assert.deepEqual(_payload.explicitOpenTargets, []);
         options.onToken("已经");
         options.onToken("完成。");
         return {
@@ -477,7 +565,7 @@ test("CLI 无 API Key 仍可进入交互终端，普通消息只提示 /model", 
   assert.match(output.join(""), /输入 \/model/);
 });
 
-test("CLI 默认按 canonical 工作空间复用稳定会话", async () => {
+test("CLI 首次按 canonical 工作空间创建稳定新任务，已有任务后启动优先创建新任务", async () => {
   const workspace = await mkdtemp(path.join(tmpdir(), "yaoguo-cli-workspace-"));
   const projects = new Map();
   const tasks = new Map();
@@ -489,6 +577,9 @@ test("CLI 默认按 canonical 工作空间复用稳定会话", async () => {
       return project;
     },
     async getTask(projectId, taskId) { return tasks.get(`${projectId}:${taskId}`) || null; },
+    async listTasks(projectId) {
+      return [...tasks.values()].filter((task) => task.projectId === projectId);
+    },
     async createTask(projectId, payload) {
       const task = { id: payload.id, projectId, title: payload.title, workspacePath: "" };
       tasks.set(`${projectId}:${task.id}`, task);
@@ -507,12 +598,16 @@ test("CLI 默认按 canonical 工作空间复用稳定会话", async () => {
   try {
     const canonical = await realpath(workspace);
     const first = await resolveSession({ projectService }, { workspace });
+    assert.equal(first.task.title, "新任务");
+    first.task.title = "已有任务";
     const second = await resolveSession({ projectService }, { workspace });
     assert.equal(first.project.id, "terminal");
     assert.equal(first.task.id, workspaceTaskId(canonical));
-    assert.equal(second.task.id, first.task.id);
+    assert.equal(first.task.title, "已有任务");
+    assert.notEqual(second.task.id, first.task.id);
+    assert.equal(second.task.title, "新任务");
     assert.equal(second.workspacePath, canonical);
-    assert.equal(tasks.size, 1);
+    assert.equal(tasks.size, 2);
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }

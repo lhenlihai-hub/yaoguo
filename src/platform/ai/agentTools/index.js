@@ -19,6 +19,7 @@ const { runSkillTool } = require("./runSkillTool");
 const { inspectArtifactTool } = require("./artifactInspectionTool");
 const { publishArtifactTool } = require("./publishArtifactTool");
 const { discardArtifactCandidateTool } = require("./discardArtifactCandidateTool");
+const { openLocalPathTool } = require("./openLocalPathTool");
 const { runToolLoop } = require("../agentLoop/agentLoop");
 const { AgentExecutionBudget } = require("./executionBudget");
 const { BASE_TOOL_NAMES } = require("../agentLoop/scopedTools");
@@ -38,7 +39,8 @@ const BASE_AGENT_TOOLS = Object.freeze([
   llmJudgeQualityTool,
   inspectArtifactTool,
   publishArtifactTool,
-  discardArtifactCandidateTool
+  discardArtifactCandidateTool,
+  openLocalPathTool
 ]);
 
 const ALL_AGENT_TOOLS = Object.freeze([
@@ -109,5 +111,6 @@ module.exports = {
   inspectArtifactTool,
   publishArtifactTool,
   discardArtifactCandidateTool,
+  openLocalPathTool,
   DEFAULT_SUBAGENT_TOOL_NAMES
 };

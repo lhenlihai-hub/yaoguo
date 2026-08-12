@@ -7,8 +7,10 @@ const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline/promises");
 const { Writable } = require("node:stream");
+const { spawn } = require("node:child_process");
 const { createApplicationServices } = require("../application/appServices");
 const { isPathInside } = require("../platform/shared/pathSafety");
+const { summarizeNameFromMessage, isAutoTaskTitle } = require("../platform/runtime/contentSignals");
 const { runUninstall, archiveTaskPublishedArtifacts } = require("./uninstall");
 
 const PACKAGE_ROOT = path.resolve(__dirname, "../..");
@@ -82,6 +84,60 @@ async function readStream(stream) {
   return content.trim();
 }
 
+async function openLocalPathWithSystem(targetPath, options = {}) {
+  const signal = options.signal || null;
+  if (signal?.aborted) return { ok: false, error: "任务已停止。" };
+  const requested = `${targetPath || ""}`.trim();
+  if (!requested || !path.isAbsolute(requested)) {
+    return { ok: false, error: "本地打开目标必须是绝对路径。" };
+  }
+  const absolute = await fsp.realpath(path.resolve(requested)).catch(() => "");
+  const stat = absolute ? await fsp.stat(absolute).catch(() => null) : null;
+  if (!stat || (!stat.isFile() && !stat.isDirectory())) {
+    return { ok: false, error: `本地打开目标不存在或类型不受支持：${requested}` };
+  }
+  const platform = `${options.platform || process.platform}`;
+  const command = platform === "darwin" ? "open" : (platform === "linux" ? "xdg-open" : "");
+  if (!command) return { ok: false, error: `当前系统不支持本地打开操作：${platform}` };
+  const spawnProcess = options.spawnProcess || spawn;
+  try {
+    await launchDetachedProcess(spawnProcess, command, absolute, signal);
+    return { ok: true, absolute };
+  } catch (error) {
+    return { ok: false, error: `无法使用系统应用打开路径：${error?.message || error}` };
+  }
+}
+
+function launchDetachedProcess(spawnProcess, command, target, signal) {
+  return new Promise((resolve, reject) => {
+    let child;
+    let settled = false;
+    const finish = (error = null) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener?.("abort", onAbort);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onAbort = () => {
+      child?.kill?.();
+      finish(signal?.reason || new Error("任务已停止。"));
+    };
+    try {
+      child = spawnProcess(command, [target], { detached: true, stdio: "ignore" });
+      child.once("error", finish);
+      child.once("spawn", () => {
+        child.unref?.();
+        finish();
+      });
+      signal?.addEventListener?.("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
+    } catch (error) {
+      finish(error);
+    }
+  });
+}
+
 function helpText() {
   return [
     "腰果 — 基于 Pi、仅支持 DeepSeek 的终端 Agent",
@@ -144,6 +200,7 @@ function createTerminal(options = {}, streams = {}) {
     ui: null,
     readlineState,
     activeController: null,
+    activeSession: null,
     exitRequested: false
   };
   rl?.on("SIGINT", () => {
@@ -448,6 +505,14 @@ function pathsOverlap(firstPath, secondPath) {
   return isPathInside(firstPath, secondPath) || isPathInside(secondPath, firstPath);
 }
 
+function isTerminalPlaceholderTaskTitle(task = {}) {
+  if (isAutoTaskTitle(task.title)) return true;
+  if (task.autoNamedAt) return false;
+  const workspaceName = path.basename(`${task.workspacePath || ""}`.trim());
+  const title = `${task.title || ""}`.trim();
+  return Boolean(workspaceName && [workspaceName, `${workspaceName} · 新会话`].includes(title));
+}
+
 async function resolveWorkspaceSelection(services, options = {}, runtime = {}) {
   const explicitWorkspace = `${options.workspace || ""}`.trim();
   const currentDirectory = runtime.currentDirectory || process.cwd();
@@ -486,14 +551,23 @@ async function resolveSession(services, options = {}, runtime = {}) {
       name: projectId === "terminal" ? "终端工作区" : projectId
     });
   }
-  const taskId = options.taskId || (options.newSession
-    ? `session-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`
-    : workspaceTaskId(workspacePath));
+  const stableTaskId = workspaceTaskId(workspacePath);
+  const existingTasks = typeof services.projectService.listTasks === "function"
+    ? await services.projectService.listTasks(project.id)
+    : [];
+  const reusableBlank = options.taskId || options.newSession
+    ? null
+    : await findReusableWorkspaceTask(services.projectService, project.id, existingTasks, workspacePath);
+  const taskId = options.taskId
+    || reusableBlank?.id
+    || (!options.newSession && !existingTasks.some((candidate) => candidate.id === stableTaskId)
+      ? stableTaskId
+      : `session-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`);
   let task = await services.projectService.getTask(project.id, taskId, false);
   if (!task) {
     task = await services.projectService.createTask(project.id, {
       id: taskId,
-      title: options.newSession ? `${path.basename(workspacePath)} · 新会话` : path.basename(workspacePath)
+      title: "新任务"
     });
   }
   if (task.workspacePath) {
@@ -508,6 +582,18 @@ async function resolveSession(services, options = {}, runtime = {}) {
   return { project, task, ...workspaceSelection };
 }
 
+async function findReusableWorkspaceTask(projectService, projectId, tasks, workspacePath) {
+  for (const task of Array.isArray(tasks) ? tasks : []) {
+    if (`${task.workspacePath || ""}` && path.resolve(task.workspacePath) !== workspacePath) continue;
+    if (typeof projectService.isBlankTask === "function") {
+      if (await projectService.isBlankTask(projectId, task).catch(() => false)) return task;
+      continue;
+    }
+    if (isAutoTaskTitle(task.title) && !task.lastRunId && !task.lastArtifact && !task.lastRunAt) return task;
+  }
+  return null;
+}
+
 async function activateSession(services, terminal, session, selectedTask) {
   let task = selectedTask;
   let workspacePath = `${task?.workspacePath || session.workspacePath || ""}`;
@@ -520,6 +606,7 @@ async function activateSession(services, terminal, session, selectedTask) {
   }
   session.task = task;
   session.workspacePath = workspacePath;
+  terminal.activeSession = session;
   if (terminal.ui) {
     terminal.ui.updateSession({ workspacePath, taskTitle: task.title || task.id });
     terminal.ui.replaceConversationHistory(await loadTerminalHistory(services, session));
@@ -533,7 +620,7 @@ async function activateSession(services, terminal, session, selectedTask) {
 async function createNewSession(services, terminal, session) {
   const task = await services.projectService.createTask(session.project.id, {
     id: `session-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
-    title: `${path.basename(session.workspacePath)} · 新会话`
+    title: "新任务"
   });
   await activateSession(services, terminal, session, task);
   terminal.ui?.addSuccess("已创建新会话。");
@@ -541,7 +628,11 @@ async function createNewSession(services, terminal, session) {
 }
 
 async function runResumeMenu(services, terminal, session) {
-  const tasks = await services.projectService.listTasks(session.project.id);
+  const listedTasks = await services.projectService.listTasks(session.project.id);
+  const tasks = await Promise.all(listedTasks.map(async (task) => ({
+    ...task,
+    title: await resolveResumeTaskTitle(services, session.project.id, task)
+  })));
   if (!terminal.ui) {
     terminal.error.write("/resume 历史管理需要完整 TUI。\n");
     return session;
@@ -597,6 +688,22 @@ async function runResumeMenu(services, terminal, session) {
   return session;
 }
 
+async function resolveResumeTaskTitle(services, projectId, task) {
+  if (!isTerminalPlaceholderTaskTitle(task)) return `${task?.title || task?.id || "新任务"}`;
+  const messages = typeof services?.workflowEngine?.listAgentMessages === "function"
+    ? await services.workflowEngine.listAgentMessages({ projectId, taskId: task.id, limit: 2000 }).catch(() => [])
+    : [];
+  const firstMessage = messages.find((row) => row?.role === "user" && `${row.content || ""}`.trim());
+  if (!firstMessage) return `${task.title || "新任务"}`;
+  const title = summarizeNameFromMessage(firstMessage.content, "新任务", 10);
+  if (title === task.title || typeof services.projectService.updateTask !== "function") return title;
+  const updated = await services.projectService.updateTask(projectId, task.id, {
+    title,
+    autoNamedAt: task.autoNamedAt || new Date().toISOString()
+  }).catch(() => null);
+  return `${updated?.title || title}`;
+}
+
 async function preserveTaskArtifacts(services, projectId, taskId) {
   const projectRoot = `${services?.paths?.projectRoot || ""}`.trim();
   if (!projectRoot || typeof services?.projectService?.getTaskDir !== "function") {
@@ -623,6 +730,15 @@ function formatTaskTime(value = "") {
 function activityReporter(terminal) {
   let previous = "";
   return (activity = {}) => {
+    if (
+      activity.status === "renamed"
+      && activity.task?.id
+      && activity.task?.title
+      && activity.task.id === terminal.activeSession?.task?.id
+    ) {
+      terminal.activeSession.task.title = activity.task.title;
+      terminal.ui?.updateSession({ taskTitle: activity.task.title });
+    }
     if (terminal.options.json || terminal.options.quiet) return;
     if (!terminal.interactive && !terminal.options.verbose) return;
     const label = `${activity.label || activity.status || ""}`.trim();
@@ -747,6 +863,40 @@ async function resolveExplicitOutputTargets(message = "") {
   return [...new Map(targets.map((target) => [target.path, target])).values()].slice(0, 4);
 }
 
+async function resolveExplicitOpenTargets(message = "") {
+  const source = `${message || ""}`;
+  if (!/(?:打开|显示|定位|访达|文件管理器|open|reveal)/iu.test(source)) return [];
+  const targets = [];
+  const matches = [...source.matchAll(/(?:^|[\s"'`“‘（(])(\/[^\r\n"'`”’）)，。；;！!？?]+)/gu)];
+  for (const match of matches) {
+    const fragment = `${match[1] || ""}`.trim();
+    const fragmentStart = Number(match.index) + `${match[0] || ""}`.indexOf(match[1]);
+    let candidate = fragment.replace(/[，。；;！!？?：:]+$/gu, "").trim();
+    while (candidate.startsWith("/")) {
+      const absolute = await fsp.realpath(candidate).catch(() => "");
+      const stat = absolute ? await fsp.stat(absolute).catch(() => null) : null;
+      if (stat && (stat.isFile() || stat.isDirectory())) {
+        const before = source.slice(Math.max(0, fragmentStart - 28), fragmentStart);
+        const after = source.slice(fragmentStart + candidate.length, fragmentStart + candidate.length + 28);
+        if (isExplicitOpenContext(before, after)) {
+          targets.push({ path: absolute, kind: stat.isDirectory() ? "directory" : "file" });
+        }
+        break;
+      }
+      const shorter = candidate.replace(/\s+\S+$/u, "").trim();
+      if (!shorter || shorter === candidate) break;
+      candidate = shorter;
+    }
+  }
+  return [...new Map(targets.map((target) => [target.path, target])).values()].slice(0, 4);
+}
+
+function isExplicitOpenContext(before = "", after = "") {
+  const openBefore = /(?:打开|显示|定位|访达|文件管理器|open|reveal)(?:一下)?(?:这个|该)?(?:本地)?(?:文件|文件夹|目录|路径)?[\s：:]*$/iu;
+  const openAfter = /^\s*(?:这个|该)?(?:文件|文件夹|目录|路径)?(?:中|里|下)?\s*(?:帮我|请)?\s*(?:打开|显示|定位|open|reveal)/iu;
+  return openBefore.test(before) || openAfter.test(after);
+}
+
 function isExplicitOutputContext(source, start, length) {
   const before = source
     .slice(Math.max(0, start - 40), start)
@@ -766,6 +916,7 @@ async function runTurn(services, terminal, session, message) {
   let streamed = false;
   let result;
   const explicitOutputTargets = await resolveExplicitOutputTargets(message);
+  const explicitOpenTargets = await resolveExplicitOpenTargets(message);
   const tuiStream = terminal.ui?.beginAssistant();
   for (const target of explicitOutputTargets) {
     terminal.ui?.recordActivity({
@@ -782,6 +933,7 @@ async function runTurn(services, terminal, session, message) {
       taskId: session.task.id,
       source: "terminal",
       explicitOutputTargets,
+      explicitOpenTargets,
       turnId: crypto.randomUUID()
     }, {
       signal: controller.signal,
@@ -1037,10 +1189,12 @@ async function main(argv = process.argv.slice(2), streams = {}) {
       projectRoot: dataRoot,
       seedWorkspaceRoot: path.join(PACKAGE_ROOT, "workspace"),
       startBackgroundServices: false,
+      openLocalPath: (targetPath, openOptions) => openLocalPathWithSystem(targetPath, openOptions),
       requestToolApproval: createApprovalHandler(terminal),
       onActivity: activityReporter(terminal)
     });
     const session = await resolveSession(services, options);
+    terminal.activeSession = session;
     const prompt = options.prompt;
     if (prompt && isUsageCommand(prompt)) await printSessionUsage(services, terminal, session);
     else if (prompt && isModelCommand(prompt)) {
@@ -1077,6 +1231,7 @@ module.exports = {
   parseArgs,
   resolveDataRoot,
   readStream,
+  openLocalPathWithSystem,
   helpText,
   createTerminal,
   createApprovalHandler,
@@ -1097,6 +1252,7 @@ module.exports = {
   createNewSession,
   runResumeMenu,
   resolveExplicitOutputTargets,
+  resolveExplicitOpenTargets,
   runTurn,
   runInteractive,
   main

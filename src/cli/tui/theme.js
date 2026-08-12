@@ -59,6 +59,10 @@ function createTuiTheme() {
     },
     userText: {
       color: (text) => ansi.blueBright(text)
+    },
+    reasoningText: {
+      color: (text) => ansi.muted(text),
+      italic: true
     }
   };
 }

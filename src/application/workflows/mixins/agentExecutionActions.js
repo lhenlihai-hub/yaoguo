@@ -87,6 +87,7 @@ const agentExecutionActions = {
     turnId = "",
     fileReferences = [],
     explicitOutputTargets = [],
+    explicitOpenTargets = [],
     requestedToolNames = null,
     maxRounds = null,
     message = "",
@@ -96,7 +97,7 @@ const agentExecutionActions = {
     const registry = createAgentToolRegistry();
     const toolCtx = /** @type {any} */ (await this._buildAgentToolContext({
       projectId, taskId, runId, runDir, handoffDir, stepId, turnId,
-      fileReferences, explicitOutputTargets, registry
+      fileReferences, explicitOutputTargets, explicitOpenTargets, registry
     }));
     const memoryCacheScope = this.memoryCacheService?.taskScope?.(projectId, taskId) || "";
     if (memoryCacheScope) {
@@ -336,6 +337,7 @@ const agentExecutionActions = {
     turnId = "",
     fileReferences = [],
     explicitOutputTargets = [],
+    explicitOpenTargets = [],
     registry = null
   } = {}) {
     const taskDir = projectId && taskId && this.projectService?.getTaskDir
@@ -438,6 +440,13 @@ const agentExecutionActions = {
       agentWriteScopeAllow: agentWorkDir ? [agentWorkDir] : [],
       agentReadScopeDeny: hostReadDeny,
       agentWriteScopeDeny: hostWriteDeny,
+      agentOpenScopeAllow: [...new Set([
+        workspacePath,
+        taskDir ? path.join(taskDir, "final") : "",
+        ...authorizedReferencePaths
+      ].filter(Boolean))],
+      agentOpenExactAllow: normalizeExplicitOpenTargets(explicitOpenTargets),
+      agentOpenScopeDeny: hostReadDeny,
       authorizedReferencePaths,
       explicitOutputTargets: normalizeExplicitOutputTargets(explicitOutputTargets),
       explicitOutputDenyRoots: [this.paths?.workspace, installationRoot].filter(Boolean),
@@ -451,6 +460,9 @@ const agentExecutionActions = {
       fullFileSystemAccess,
       ...(typeof this.openExternal === "function" ? {
         openExternal: (url, options) => this.openExternal(url, options)
+      } : {}),
+      ...(typeof this.openLocalPath === "function" ? {
+        openLocalPath: (targetPath, options) => this.openLocalPath(targetPath, options)
       } : {}),
       ...(this.toolPermissionService?.authorize ? {
         authorizeToolCall: (input) => this.toolPermissionService.authorize(input)
@@ -659,6 +671,15 @@ function normalizeExplicitOutputTargets(values = []) {
     }))
     .filter((target) => path.isAbsolute(target.path) && target.path !== path.parse(target.path).root);
   return [...new Map(normalized.map((target) => [target.path, target])).values()].slice(0, 4);
+}
+
+function normalizeExplicitOpenTargets(values = []) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map((target) => `${target && typeof target === "object" ? target.path : target || ""}`.trim())
+    .filter((target) => path.isAbsolute(target))
+    .map((target) => path.resolve(target))
+    .filter((target) => target !== path.parse(target).root))]
+    .slice(0, 4);
 }
 
 async function collectAgentFileArtifacts(toolCalls = [], toolCtx = {}) {

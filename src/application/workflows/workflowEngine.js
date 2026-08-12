@@ -37,6 +37,7 @@ class WorkflowEngine {
     pdfRenderer = null,
     shellSandboxFactory = null,
     openExternal = null,
+    openLocalPath = null,
     toolPermissionService = null,
     taskSessionStore = null,
     taskAgentCoordinator = null,
@@ -82,6 +83,7 @@ class WorkflowEngine {
     this.pdfRenderer = pdfRenderer;
     this.shellSandboxFactory = shellSandboxFactory;
     this.openExternal = openExternal;
+    this.openLocalPath = openLocalPath;
     this.toolPermissionService = toolPermissionService;
     this.taskSessionStore = taskSessionStore || (projectService
       ? new TaskSessionStore({

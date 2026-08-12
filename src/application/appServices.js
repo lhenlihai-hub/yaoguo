@@ -31,6 +31,7 @@ async function createApplicationServices({
   onActivity = null,
   shellSandboxFactory = null,
   openExternal = null,
+  openLocalPath = null,
   requestToolApproval = null,
   seedWorkspaceRoot = "",
   memdirBaseDirectory = "",
@@ -144,6 +145,7 @@ async function createApplicationServices({
     onActivity,
     shellSandboxFactory,
     openExternal,
+    openLocalPath,
     toolPermissionService,
     taskSessionStore,
     taskAgentCoordinator

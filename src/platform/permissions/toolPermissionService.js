@@ -32,6 +32,10 @@ const EFFECT_PRESENTATION = Object.freeze({
     label: "在系统浏览器打开网页",
     boundary: "精确授权只允许界面中的公开 HTTP(S) 网址；“该类型全部允许”会放行所有公开网址。授权不会让 Agent 控制浏览器、读取网页会话或操作其他系统应用。"
   },
+  local_open: {
+    label: "使用系统应用打开本地路径",
+    boundary: "精确授权只允许界面中的文件或文件夹；“该类型全部允许”会放行当前任务可访问路径的打开操作。Agent 仍不能控制外部应用，且工作空间、用户本轮授权路径与宿主控制目录边界始终生效。"
+  },
   memory_write: {
     label: "写入长期记忆",
     boundary: "精确授权只保存界面中的这条内容；本次任务和始终允许仍按完全相同的内容生效。“该类型全部允许”会允许 Agent 提交其他长期记忆。写入始终绑定当前 canonical workspace，并受四种封闭类型、信息边界、大小与路径安全校验约束。"
@@ -277,6 +281,16 @@ function describePermissionResource(name, args, effect, context) {
   if (effect === "external_open") {
     const url = externalOpenUrl(args?.command) || canonicalUrl(args?.url);
     return permissionResource("url", url, displayUrl(url));
+  }
+  if (effect === "local_open") {
+    const cwd = permissionWorkDir(context);
+    const target = path.resolve(cwd, `${args?.path || ""}`.trim() || ".");
+    return permissionResource(
+      "path",
+      `local_open\n${target}`,
+      target,
+      "工具 open_local_path 请求使用系统应用打开本地文件或文件夹。"
+    );
   }
   if (effect === "workspace_write") {
     return describeWorkspaceWriteResource(normalizedName, args, context);

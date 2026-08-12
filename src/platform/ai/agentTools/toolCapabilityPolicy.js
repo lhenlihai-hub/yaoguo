@@ -63,6 +63,14 @@ const TOOL_CAPABILITY_POLICIES = Object.freeze({
     ["废弃候选", "放弃文件", "不采用", "discard", "candidate"],
     "resident"
   ),
+  open_local_path: policy(
+    "filesystem",
+    "local_open",
+    false,
+    "rerun",
+    ["打开文件", "打开文件夹", "打开目录", "显示文件", "定位文件", "open", "reveal"],
+    "resident"
+  ),
   spawn_subagent: policy("delegation", "model_compute", false, "reject", ["委派", "并行处理", "分头", "子代理", "subagent", "delegate"], "loadable", {
     intentMode: "delegate",
     intentExamples: ["找个人帮我查资料", "让另一个智能体处理", "分派一个代理", "并行处理子任务"],
@@ -162,6 +170,7 @@ function isToolAvailable(name, ctx = {}) {
   if (["inspect_artifact", "publish_artifact", "discard_artifact_candidate"].includes(name)) {
     return Boolean(ctx.agentWorkDir || ctx.taskDir);
   }
+  if (name === "open_local_path") return typeof ctx.openLocalPath === "function";
   return false;
 }
 

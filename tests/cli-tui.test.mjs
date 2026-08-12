@@ -109,6 +109,8 @@ test("TUI 展示真实推理耗时、工作流程与完整路径", async () => {
   assert.match(output, /\/tmp\/Yaoguo Workspace\/references/);
   assert.match(output, /思考过程 · 1\.3s/);
   assert.match(output, /先核对用户指定的交付路径/);
+  assert.match(output, /\u001b\[38;2;139;153;173m/);
+  assert.match(output, /\u001b\[3m/);
   assert.match(output, /All agree/);
   await ui.dispose();
 });

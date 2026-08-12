@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
@@ -119,12 +120,52 @@ test("createBaseToolRegistry 预装安全基础工具集", () => {
     "search_memory", "pin_memory",
     "search_reference", "fetch_url", "search_images", "read_reference",
     "llm_judge_quality",
-    "inspect_artifact", "publish_artifact", "discard_artifact_candidate"
+    "inspect_artifact", "publish_artifact", "discard_artifact_candidate", "open_local_path"
   ];
   for (const name of expected) assert.ok(registry.has(name), `缺工具:${name}`);
   const schemas = registry.toSchemas();
   assert.equal(schemas.length, expected.length);
   assert.ok(schemas.every((s) => s.type === "function" && s.function?.name));
+});
+
+test("open_local_path 只打开允许范围内的真实文件或文件夹", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "yaoguo-open-workspace-"));
+  const outside = await mkdtemp(join(tmpdir(), "yaoguo-open-outside-"));
+  const opened = [];
+  try {
+    await mkdir(join(workspace, "folder"));
+    await writeFile(join(workspace, "report.md"), "ok", "utf8");
+    const registry = createAgentToolRegistry();
+    const context = {
+      agentWorkDir: workspace,
+      agentOpenScopeAllow: [workspace],
+      openLocalPath: async (absolute, options) => {
+        opened.push([absolute, options.kind]);
+        return { ok: true };
+      }
+    };
+    const folder = await registry.execute("open_local_path", { path: "folder" }, context);
+    const file = await registry.execute("open_local_path", { path: "report.md" }, context);
+    const canonicalWorkspace = await realpath(workspace);
+    const canonicalOutside = await realpath(outside);
+    assert.deepEqual([folder.kind, file.kind], ["directory", "file"]);
+    assert.deepEqual(opened, [
+      [join(canonicalWorkspace, "folder"), "directory"],
+      [join(canonicalWorkspace, "report.md"), "file"]
+    ]);
+    await assert.rejects(
+      registry.execute("open_local_path", { path: outside }, context),
+      /只能打开当前任务工作空间/
+    );
+    const exact = await registry.execute("open_local_path", { path: outside }, {
+      ...context,
+      agentOpenExactAllow: [outside]
+    });
+    assert.equal(exact.absolute, canonicalOutside);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
 });
 
 test("recall_handoff 读取 checkpoint accumulated state", async () => {
@@ -618,7 +659,7 @@ test("createAgentToolRegistry 提供唯一完整能力目录", () => {
   const registry = createAgentToolRegistry();
   for (const name of ["search_reference", "fetch_url", "search_memory", "pin_memory",
     "read_artifact", "search_run_artifacts", "llm_judge_quality", "spawn_subagent", "load_capability",
-    "search_images", "write_todo", "list_todos", "recall_handoff"]) {
+    "search_images", "write_todo", "list_todos", "recall_handoff", "open_local_path"]) {
     assert.ok(registry.has(name), `应含 ${name}`);
   }
   assert.equal(registry.has("read_context_result"), false);

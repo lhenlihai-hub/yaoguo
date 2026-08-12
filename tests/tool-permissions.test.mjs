@@ -111,6 +111,19 @@ test("Pi 基础工具通过 effect 进入同一授权链", () => {
   );
 });
 
+test("本地路径打开使用独立授权 effect，并展示规范绝对路径", () => {
+  const permission = describeToolPermission(toolInput(
+    "open_local_path",
+    { path: "reports" },
+    "local_open",
+    { agentWorkDir: "/tmp/work" }
+  ));
+  assert.equal(permission.effect, "local_open");
+  assert.equal(permission.resourceKind, "path");
+  assert.equal(permission.target, "/tmp/work/reports");
+  assert.match(permission.summary, /系统应用打开本地文件或文件夹/);
+});
+
 test("本地参考读取保持安全 read，只有真实联网参数请求 network_read", () => {
   const searchPolicy = getToolCapabilityPolicy("search_reference");
   const readPolicy = getToolCapabilityPolicy("read_reference");

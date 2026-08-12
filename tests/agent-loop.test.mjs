@@ -629,6 +629,43 @@ test("Agent 工具上下文注入统一的宿主授权能力", async () => {
   }
 });
 
+test("本地打开能力只在宿主注入时进入 Agent，并保留独立路径边界", async () => {
+  const workDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-local-open-"));
+  try {
+    const base = {
+      ...agentExecutionActions,
+      settingsService: {
+        get: async () => ({ permissions: { fileSystem: { fullAccess: false } } })
+      },
+      projectService: {
+        getTaskDir() { return workDir; },
+        async getTask() { return { workspacePath: workDir }; },
+        async resolveTaskWorkspace() {
+          return { task: { workspacePath: workDir }, workspacePath: workDir };
+        }
+      }
+    };
+    const unavailable = await base._buildAgentToolContext({
+      projectId: "project-test",
+      taskId: "task-test"
+    });
+    assert.equal(isToolAvailable("open_local_path", unavailable), false);
+
+    const available = await ({ ...base, openLocalPath: async () => ({ ok: true }) })
+      ._buildAgentToolContext({
+        projectId: "project-test",
+        taskId: "task-test",
+        explicitOpenTargets: [{ path: workDir }, { path: "relative" }, {}, ""]
+      });
+    assert.equal(isToolAvailable("open_local_path", available), true);
+    assert.deepEqual(available.agentOpenScopeAllow, [workDir, path.join(workDir, "final")]);
+    assert.deepEqual(available.agentOpenExactAllow, [workDir]);
+    assert.ok(available.agentOpenScopeDeny.includes(path.join(workDir, "session")));
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
 test("未绑定工作空间时，完整文件读取权限不能把外部参考目录变成写入位置", async () => {
   const taskDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-internal-output-"));
   const externalDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-readonly-reference-"));

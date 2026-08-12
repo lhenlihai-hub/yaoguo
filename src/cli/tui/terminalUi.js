@@ -174,7 +174,13 @@ class YaoguoTerminalUi {
     const label = new Text(ansi.blueBright(ansi.bold("正在分析任务")), 1, 0);
     const workflow = new Text("", 1, 0);
     const reasoningTitle = new Text("", 1, 0);
-    const reasoning = new Markdown("", 1, 0, this.theme.markdown);
+    const reasoning = new Markdown(
+      "",
+      1,
+      0,
+      this.theme.markdown,
+      this.theme.reasoningText
+    );
     const markdown = new Markdown("", 1, 0, this.theme.markdown);
     component.addChild(label);
     component.addChild(workflow);
