@@ -59,6 +59,7 @@ class AiRouter {
     onToolCalls = null,
     signal = null,
     pinnedSections = [],
+    conversationMessages = [],
     instructionReminder = "",
     instructionMemorySummary = null,
     memoryCacheScope = "",
@@ -92,7 +93,7 @@ class AiRouter {
         taskType, title, instruction, input, runContext, contextProfile, contextBudget,
         contentFilterSafe, jsonMode, responseFormat,
         onToken, onReasoning, tools, toolChoice, onToolCalls, signal: effectiveSignal,
-        pinnedSections, instructionReminder, instructionMemorySummary,
+        pinnedSections, conversationMessages, instructionReminder, instructionMemorySummary,
         memoryCacheScope,
         internalCall, projectId, taskId, runId, stepId,
         agentStage, thinkingOverride, reasoningEffortOverride, maxOutputTokens, executionBudget,
@@ -118,7 +119,7 @@ class AiRouter {
         provider, model, settings, callMaxTokens,
         taskType, title, instruction, input, runContext, contextProfile, contextBudget,
         contentFilterSafe,
-        pinnedSections, instructionReminder, instructionMemorySummary, memoryCacheScope,
+        pinnedSections, conversationMessages, instructionReminder, instructionMemorySummary, memoryCacheScope,
         internalCall, tools, executionBudget, signal: effectiveSignal
       });
       const startedAt = new Date();

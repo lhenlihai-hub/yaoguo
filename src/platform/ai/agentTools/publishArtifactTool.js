@@ -29,7 +29,7 @@ const PUBLISH_ARTIFACT_TOOL_SCHEMA = {
     name: "publish_artifact",
     description: [
       "发布一个已经 inspect_artifact 检查、且由你确认满足用户要求的最终文件。",
-      "发布是所有文件进入成品区的唯一出口；生成工具成功只代表候选文件存在。",
+      "发布是候选文件成为用户可见成品的唯一出口；生成工具成功只代表候选文件存在。",
       "用户明确指定输出目录或文件时，使用 destination；宿主只允许写入本轮从用户原话确认的目标。",
       "源码、构建脚本、草稿、缓存和临时预览不要发布，除非它们就是用户要求的交付物。"
     ].join(""),
@@ -49,7 +49,7 @@ const PUBLISH_ARTIFACT_TOOL_SCHEMA = {
         title: {
           type: "string",
           maxLength: 120,
-          description: "可选。右侧成品区显示的标题；不填使用文件名。"
+          description: "可选。用户可见的成品标题；不填使用文件名。"
         },
         destination: {
           type: "string",

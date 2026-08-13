@@ -61,7 +61,7 @@ async function resolveOpenLocalPath(requestedPath = "", ctx = {}) {
   );
   const exactAllowed = await canonicalRoots(ctx.agentOpenExactAllow || []);
   if (!allowedRoots.some((root) => isPathInside(root, absolute)) && !exactAllowed.includes(absolute)) {
-    throw new Error("只能打开当前任务工作空间、成品区或用户本轮明确指定的本地路径。");
+    throw new Error("只能打开当前任务工作空间、已发布成品路径或用户本轮明确指定的本地路径。");
   }
   const deniedRoots = await canonicalRoots(ctx.agentOpenScopeDeny || [], true);
   if (deniedRoots.some((root) => isPathInside(root, absolute))) {

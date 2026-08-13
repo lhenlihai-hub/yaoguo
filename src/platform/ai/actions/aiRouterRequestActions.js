@@ -10,32 +10,53 @@ const {
 const { estimateRequestTokens } = require("../../tokens/tokenEstimator");
 const { dedupeContextSections } = require("../../context/contextDeduper");
 
+function normalizeConversationMessages(messages = []) {
+  return (Array.isArray(messages) ? messages : [])
+    .map((message) => ({
+      role: message?.role === "assistant" ? "assistant" : "user",
+      content: `${message?.content || ""}`.trim(),
+      ...(message?.modelReady === true ? { modelReady: true } : {})
+    }))
+    .filter((message) => message.content);
+}
+
 module.exports = {
   isTransientModelError(error) {
     const message = `${error?.message || error || ""}`.toLowerCase();
     return /429|rate.?limit|too many requests|overload|engine_overloaded|try again later|timeout|temporarily unavailable|service unavailable|503|504|系统繁忙|服务繁忙|限流|稍后重试/.test(message);
   },
 
-  buildTaskUserMessage({ taskType, title, instruction, input, runContext, pinnedSections, budget }) {
+  buildTaskContextMessage({ runContext, pinnedSections, budget }) {
     const candidates = [
       ...(pinnedSections || []).map((content, index) => ({ key: `pinned:${index}`, kind: "pinned", content, priority: 90, protected: true })),
-      { key: "runContext", kind: "runContext", content: truncateForPromptTokens(runContext || "", budget.runContextTokens), priority: 75 },
-      { key: "input", kind: "input", content: truncateForPromptTokens(input || "无", budget.inputTokens), priority: 100, protected: true }
+      { key: "runContext", kind: "runContext", content: truncateForPromptTokens(runContext || "", budget.runContextTokens), priority: 75 }
     ];
     const selected = dedupeContextSections(candidates).included;
     const selectedByKey = new Map(selected.map((section) => [section.key, section]));
     const parts = [];
-    for (const section of selected.filter((item) => item.kind === "pinned")) parts.push("", section.content);
-    parts.push(
-      "", "【运行上下文】", selectedByKey.get("runContext")?.content || "无",
-      "", `【当前步骤】${title}（${taskType}）`,
-      "", "【步骤要求】", instruction,
-      "", "【输入】", selectedByKey.get("input")?.content || "无"
-    );
-    return parts.join("\n");
+    for (const section of selected.filter((item) => item.kind === "pinned")) parts.push(section.content);
+    const selectedRunContext = selectedByKey.get("runContext")?.content || "";
+    if (selectedRunContext) parts.push("【运行上下文】", selectedRunContext);
+    return parts.join("\n").trim();
   },
 
-  async loadTaskContextSections({ contentFilterSafe, instruction, input, runContext, pinnedSections, instructionReminder, internalCall = false }) {
+  buildTaskUserMessage({ taskType, title, instruction, input, context = "", budget }) {
+    return [
+      ...(context ? ["【本轮上下文】", context, ""] : []),
+      `【当前步骤】${title}（${taskType}）`,
+      "",
+      "【步骤要求】",
+      instruction || "完成当前用户请求。",
+      "",
+      "【输入】",
+      truncateForPromptTokens(input || "无", budget.inputTokens)
+    ].join("\n");
+  },
+
+  async loadTaskContextSections({
+    contentFilterSafe, instruction, input, runContext, pinnedSections,
+    conversationMessages, instructionReminder, internalCall = false
+  }) {
     let safeInstruction = instruction;
     let safeInput = input;
     let safeRunContext = runContext;
@@ -43,20 +64,33 @@ module.exports = {
     let safePinnedSections = (Array.isArray(pinnedSections) ? pinnedSections : [pinnedSections])
       .map((section) => `${section || ""}`.trim())
       .filter(Boolean);
+    let safeConversationMessages = normalizeConversationMessages(conversationMessages);
     if (contentFilterSafe) {
       safeInstruction = sanitizePromptForContentFilter(instruction);
       safeInput = sanitizePromptForContentFilter(input);
       safeRunContext = sanitizePromptForContentFilter(runContext);
       safeInstructionReminder = sanitizePromptForContentFilter(safeInstructionReminder);
       safePinnedSections = safePinnedSections.map((section) => sanitizePromptForContentFilter(section));
+      safeConversationMessages = safeConversationMessages.map((message) => ({
+        ...message,
+        content: sanitizePromptForContentFilter(message.content)
+      }));
     }
-    return { safeInstruction, safeInput, safeRunContext, safePinnedSections, safeInstructionReminder };
+    return {
+      safeInstruction,
+      safeInput,
+      safeRunContext,
+      safePinnedSections,
+      safeConversationMessages,
+      safeInstructionReminder
+    };
   },
 
-  buildTaskMessages({ system = "", instructionReminder = "", user = "" } = {}) {
+  buildTaskMessages({ system = "", instructionReminder = "", conversation = [], user = "" } = {}) {
     return [
       { role: "system", content: system },
       ...(instructionReminder ? [{ role: "user", content: instructionReminder }] : []),
+      ...normalizeConversationMessages(conversation).map(({ role, content }) => ({ role, content })),
       { role: "user", content: user }
     ];
   },
@@ -90,18 +124,38 @@ module.exports = {
       : await this.assembleSystemPrompt(args.taskType, { cacheScope: args.memoryCacheScope });
     const modelContextTokens = this.getModelContextTokens(args.provider, args.model, args.settings);
     const outputReserveTokens = this.getOutputReserveTokens(args.provider, args.settings, args.callMaxTokens);
+    const context = this.buildTaskContextMessage({
+      runContext: sections.safeRunContext,
+      pinnedSections: sections.safePinnedSections,
+      budget: tokenBudget
+    });
     const user = this.buildTaskUserMessage({
       taskType: args.taskType,
       title: args.title,
       instruction: sections.safeInstruction,
       input: sections.safeInput,
-      runContext: sections.safeRunContext,
-      pinnedSections: sections.safePinnedSections,
+      context,
       budget: tokenBudget
+    });
+    const conversation = this.fitTaskConversationMessages({
+      messages: this.buildTaskConversationMessages({
+        messages: sections.safeConversationMessages,
+        taskType: args.taskType,
+        title: args.title,
+        instruction: sections.safeInstruction,
+        budget: tokenBudget
+      }),
+      tools: args.tools || [],
+      system,
+      instructionReminder: sections.safeInstructionReminder,
+      user,
+      modelContextTokens,
+      outputReserveTokens
     });
     const messages = this.buildTaskMessages({
       system,
       instructionReminder: sections.safeInstructionReminder,
+      conversation,
       user
     });
     const promptTokens = estimateRequestTokens({ messages, tools: args.tools || [] });
@@ -110,6 +164,50 @@ module.exports = {
       profile, budget, tokenBudget, sections, system, modelContextTokens, outputReserveTokens,
       messages, promptTokens, effectiveBudget: tokenBudget
     };
+  },
+
+  buildTaskConversationMessages({ messages = [], taskType, title, instruction, budget }) {
+    return normalizeConversationMessages(messages).map((message) => {
+      if (message.role !== "user" || message.modelReady) {
+        return { role: message.role, content: message.content };
+      }
+      return {
+        role: "user",
+        content: this.buildTaskUserMessage({
+          taskType,
+          title,
+          instruction,
+          input: message.content,
+          budget
+        })
+      };
+    });
+  },
+
+  fitTaskConversationMessages({
+    messages = [], tools = [], system = "", instructionReminder = "", user = "",
+    modelContextTokens = 0, outputReserveTokens = 0
+  } = {}) {
+    const conversation = normalizeConversationMessages(messages)
+      .map(({ role, content }) => ({ role, content }));
+    const hardInputTokens = this.contextWindowLimits(
+      modelContextTokens,
+      outputReserveTokens
+    ).hardInputTokens;
+    while (conversation.length) {
+      const promptTokens = estimateRequestTokens({
+        messages: this.buildTaskMessages({
+          system,
+          instructionReminder,
+          conversation,
+          user
+        }),
+        tools
+      });
+      if (promptTokens <= hardInputTokens) break;
+      conversation.shift();
+    }
+    return conversation;
   },
 
   buildTaskCallEntry(args = {}, request = {}) {

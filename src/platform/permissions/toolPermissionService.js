@@ -424,7 +424,7 @@ function describeArtifactPublish(args, context, cwd) {
       ? (requested || explicitTargets.length
         ? "工具 publish_artifact 请求保留受管成品，并复制到用户明确指定的位置。"
         : "工具 publish_artifact 请求保留受管成品，并复制到当前任务绑定的用户工作空间。")
-      : "工具 publish_artifact 请求把已检查候选发布到当前任务的受管成品区。"
+      : "工具 publish_artifact 请求把已检查候选发布到当前任务的受管发布目录。"
   );
 }
 

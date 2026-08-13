@@ -116,6 +116,46 @@ async buildAgentHistoryContext({
   ].filter(Boolean).join("\n\n");
 },
 
+async buildAgentConversationMessages({
+  projectId = "", taskId = "", currentTurnId = "", currentMessage = ""
+} = {}) {
+  if (!projectId || !taskId) return [];
+  const settings = typeof this.settingsService?.get === "function"
+    ? await this.settingsService.get().catch(() => ({}))
+    : {};
+  const config = settings.context?.agentHistory || {};
+  const readLimit = Math.max(1, Number(config.readLimit) || 240);
+  const window = await this.listAgentMessageWindow({ projectId, taskId, limit: readLimit + 2 });
+  const rows = window.rows.filter((row, index) => {
+    const currentTurn = currentTurnId && row.turnId === currentTurnId && row.role === "user";
+    const matchingLastInput = row.role === "user" && index === window.rows.length - 1
+      && `${row.content || ""}`.trim() === `${currentMessage || ""}`.trim();
+    return !(currentTurn || matchingLastInput);
+  });
+  const modelInputs = await loadPersistedModelInputs(this, { projectId, taskId, rows });
+  const totalTokens = Number(config.tokens) || 24000;
+  const picked = [];
+  let used = 0;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index];
+    const persistedModelInput = row.role === "user" && row.turnId
+      ? modelInputs.get(`${row.turnId}`)
+      : "";
+    const content = persistedModelInput || `${row.content || ""}`;
+    const tokens = estimateTokens(content);
+    if (tokens > totalTokens) break;
+    if (picked.length && used + tokens > totalTokens) break;
+    picked.unshift({
+      role: row.role === "assistant" ? "assistant" : "user",
+      content,
+      ...(persistedModelInput ? { modelReady: true } : {})
+    });
+    used += tokens;
+    if (used >= totalTokens) break;
+  }
+  return picked;
+},
+
 async hasUserMessagesBefore({ projectId = "", taskId = "", scheduledAt = "" } = {}) {
   const rows = await this.listAgentMessages({ projectId, taskId, limit: 20 });
   const scheduledTime = Date.parse(scheduledAt || "") || Date.now();
@@ -126,6 +166,29 @@ async hasUserMessagesBefore({ projectId = "", taskId = "", scheduledAt = "" } = 
   });
 }
 };
+
+async function loadPersistedModelInputs(engine, {
+  projectId = "", taskId = "", rows = []
+} = {}) {
+  if (typeof engine.taskSessionStore?.readContentBodyRef !== "function") return new Map();
+  const refs = new Map();
+  for (const row of rows) {
+    const sha256 = `${row?.modelInputRef?.sha256 || ""}`;
+    const turnId = `${row?.turnId || ""}`;
+    if (row?.role !== "assistant" || !turnId || !/^[a-f0-9]{64}$/.test(sha256)) continue;
+    refs.set(turnId, sha256);
+  }
+  const resolved = new Map();
+  await Promise.all([...refs].map(async ([turnId, sha256]) => {
+    const content = await engine.taskSessionStore.readContentBodyRef({
+      projectId,
+      taskId,
+      sha256
+    }).catch(() => "");
+    if (`${content || ""}`.trim()) resolved.set(turnId, `${content}`);
+  }));
+  return resolved;
+}
 
 function compactMessageEntry(entry = {}) {
   const next = { ...entry };

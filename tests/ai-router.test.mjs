@@ -156,19 +156,78 @@ test("AiRouter 只保留运行所需的 ModelGateway 完成入口", async () => 
   ]);
 });
 
-test("AiRouter 把显式 pinned context 放在每次变化的任务字段之前", () => {
+test("AiRouter 把本轮上下文放进当前输入，并保留原生会话顺序", () => {
   const router = new AiRouter(settings(), null);
-  const message = router.buildTaskUserMessage({
-    taskType: "draft",
-    title: "变化标题",
-    instruction: "变化要求",
-    input: "变化输入",
-    runContext: "变化上下文",
+  const context = router.buildTaskContextMessage({
+    runContext: "稳定上下文",
     pinnedSections: ["稳定项目契约"],
     budget: { runContextTokens: 1000, inputTokens: 1000 }
   });
-  assert.ok(message.indexOf("稳定项目契约") < message.indexOf("变化标题"));
-  assert.ok(message.indexOf("变化上下文") < message.indexOf("变化要求"));
+  const current = router.buildTaskUserMessage({
+    taskType: "draft", title: "变化标题", instruction: "变化要求",
+    input: "变化输入", context, budget: { inputTokens: 1000 }
+  });
+  const messages = router.buildTaskMessages({
+    system: "系统",
+    conversation: [
+      { role: "user", content: "历史输入" },
+      { role: "assistant", content: "历史回答" }
+    ],
+    user: current
+  });
+  assert.deepEqual(messages.map((message) => message.role), ["system", "user", "assistant", "user"]);
+  assert.equal(messages[1].content, "历史输入");
+  assert.match(messages.at(-1).content, /稳定项目契约[\s\S]*稳定上下文[\s\S]*变化标题[\s\S]*变化输入/);
+});
+
+test("连续两轮请求完整复用上一轮 messages 作为严格前缀", async () => {
+  const router = new AiRouter(
+    settings(),
+    { registriesDir: path.join(process.cwd(), "workspace", "registries") }
+  );
+  const common = {
+    taskType: "agent",
+    title: "腰果 Agent",
+    instruction: "",
+    contextProfile: "heavy",
+    contextBudget: { runContextTokens: 4000, inputTokens: 4000 },
+    provider: { id: "deepseek" },
+    model: "deepseek-v4-pro",
+    callMaxTokens: 1000,
+    settings: await settings().get()
+  };
+  const first = await router.prepareTaskRequest({
+    ...common,
+    input: "第一问",
+    runContext: "第一轮上下文"
+  });
+  const firstUser = first.messages.at(-1).content;
+  const second = await router.prepareTaskRequest({
+    ...common,
+    input: "第二问",
+    runContext: "第二轮上下文",
+    conversationMessages: [
+      { role: "user", content: firstUser, modelReady: true },
+      { role: "assistant", content: "第一答" }
+    ]
+  });
+  assert.deepEqual(second.messages.slice(0, first.messages.length), first.messages);
+  assert.equal(second.messages.at(-2).content, "第一答");
+  assert.match(second.messages.at(-1).content, /第二轮上下文[\s\S]*第二问/);
+});
+
+test("上下文接近硬上限时只从最旧历史开始裁剪，不改写保留消息", () => {
+  const router = new AiRouter(settings(), null);
+  const old = { role: "user", content: "旧".repeat(3000) };
+  const recent = { role: "assistant", content: "新".repeat(3000) };
+  const fitted = router.fitTaskConversationMessages({
+    messages: [old, recent],
+    system: "系统".repeat(200),
+    user: "当前".repeat(200),
+    modelContextTokens: 12000,
+    outputReserveTokens: 1000
+  });
+  assert.deepEqual(fitted, [recent]);
 });
 
 test("AiRouter.resolveCallTimeoutMs 不覆盖 ModelGateway 的任务级 timeout profile", () => {

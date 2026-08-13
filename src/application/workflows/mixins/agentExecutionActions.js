@@ -39,6 +39,7 @@ const agentExecutionActions = {
   _buildAgentRequest({
     input = "",
     runContext = "",
+    conversationMessages = [],
     instruction = "",
     title = "腰果 Agent",
     projectId = "",
@@ -55,6 +56,7 @@ const agentExecutionActions = {
       instruction,
       input,
       runContext,
+      conversationMessages,
       contextProfile: "heavy",
       contextBudget: { ...AGENT_CONTEXT_BUDGET },
       pinnedSections: [],
@@ -232,6 +234,7 @@ const agentExecutionActions = {
       blocked: Boolean(result.exhausted && !result.aborted),
       stopCode: normalizeTraceCode(result.stopCode),
       usage: result.usage || null,
+      modelInput: `${result.modelInput || ""}`,
       contextStats: toPersistedContextStats(result.contextStats),
       artifact: artifacts.at(-1) || null,
       artifacts,

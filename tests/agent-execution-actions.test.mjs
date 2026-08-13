@@ -116,6 +116,7 @@ test("_buildAgentRequest: 所有工作输入使用统一 token 预算，不截�
 
   assert.equal(request.taskType, "agent");
   assert.equal(request.input, input);
+  assert.deepEqual(request.conversationMessages, []);
   assert.deepEqual(request.contextBudget, {
     runContextTokens: 180000,
     inputTokens: 64000

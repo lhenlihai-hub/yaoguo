@@ -83,6 +83,7 @@ async _runAgentInputTurn(payload = {}, options = {}) {
       taskId,
       runId,
       turnId,
+      source: `${payload.source || "desktop"}`,
       fileReferences,
       explicitOutputTargets,
       explicitOpenTargets,

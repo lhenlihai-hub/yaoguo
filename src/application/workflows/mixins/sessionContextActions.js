@@ -68,7 +68,7 @@ async cleanupRunProcessFiles(runId = "") {
 buildArtifactReply({ artifact }) {
   return [
     `已完成：${artifact?.title || "最终成品"}`,
-    "点击下面的文件卡，可以在右侧预览完整成品。"
+    artifact?.absolute ? `成品路径：${artifact.absolute}` : "成品已经发布。"
   ].join("\n");
 },
 

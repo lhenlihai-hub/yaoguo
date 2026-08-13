@@ -30,6 +30,7 @@ const {
  * @property {boolean} aborted
  * @property {boolean} budgetExhausted
  * @property {string} stopCode
+ * @property {string} modelInput
  */
 
 /** @param {any} [options] @returns {Promise<AgentLoopResult>} */
@@ -519,11 +520,20 @@ function buildAgentResult(state, text, transcript, extra = {}) {
     toolCalls: sortToolCalls(state.runtime.toolCalls, state.runtime.callIndexById),
     contextStats,
     usage: summarizeAgentUsage(transcript, state.modelCalls),
+    modelInput: initialRequestUserContent(state.baseResponse),
     exhausted: Boolean(extra.exhausted),
     aborted: Boolean(extra.aborted),
     budgetExhausted: Boolean(extra.budgetExhausted),
     stopCode: `${extra.stopCode || ""}`
   };
+}
+
+function initialRequestUserContent(baseResponse = null) {
+  const messages = Array.isArray(baseResponse?.requestMessages)
+    ? baseResponse.requestMessages
+    : [];
+  const user = [...messages].reverse().find((message) => message?.role === "user");
+  return typeof user?.content === "string" ? user.content : "";
 }
 
 function sortToolCalls(toolCalls, order) {

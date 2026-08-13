@@ -549,7 +549,7 @@ async _deliverDocument({
   const summary = [
     `已生成 ${deliverable.kind} 候选文件：${path.basename(outputPath)}（${deliverable.bytes} bytes${pageNote}，来源：${resolved.sourceLabel}${sourceNote}，基础结构校验通过）。`,
     `候选位置：${outputPath}。`,
-    `请用 inspect_artifact 读取真实内容并对照用户要求；确认合格后用 publish_artifact 发布。未发布前不会进入成品区。${warningNote}${degradeNote}`
+    `请用 inspect_artifact 读取真实内容并对照用户要求；确认合格后用 publish_artifact 发布。未发布前不会成为用户可见成品。${warningNote}${degradeNote}`
   ].join("");
   const fullReply = finalReply ? `${finalReply}\n\n${summary}` : summary;
 

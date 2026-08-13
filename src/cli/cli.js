@@ -1062,7 +1062,10 @@ async function runTurn(services, terminal, session, message) {
   if (terminal.ui) {
     terminal.ui.finishAssistant(tuiStream, result.reply || "");
     for (const artifact of result.artifacts || []) terminal.ui.addArtifact(artifact?.absolute);
-    if (result.usage) terminal.ui.setUsageText(formatTuiUsage(result.usage));
+    const cumulativeUsage = await sessionUsage(services, session).catch(() => null);
+    if (cumulativeUsage || result.usage) {
+      terminal.ui.setUsageText(formatTuiUsage(cumulativeUsage || result.usage));
+    }
   }
   else if (terminal.options.json) {
     terminal.output.write(`${JSON.stringify({
@@ -1078,7 +1081,11 @@ async function runTurn(services, terminal, session, message) {
       if (artifact?.absolute) terminal.error.write(`成品：${artifact.absolute}\n`);
     }
     if (!terminal.options.quiet && result.usage) {
-      terminal.error.write(`${formatUsage(result.usage, { durationMs: Date.now() - startedAt })}\n`);
+      const cumulativeUsage = await sessionUsage(services, session).catch(() => null);
+      terminal.error.write(`${formatUsage(cumulativeUsage || result.usage, {
+        label: cumulativeUsage ? "会话累计" : "本轮",
+        durationMs: Date.now() - startedAt
+      })}\n`);
     }
   }
   return result;

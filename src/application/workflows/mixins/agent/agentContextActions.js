@@ -6,6 +6,8 @@ async buildAgentContext({
   projectId = "", taskId = "", runId = "", turnId = "", message = "",
   state = null, step = null
 } = {}) {
+  void turnId;
+  void message;
   const parts = [];
   const project = projectId && typeof this.projectService?.getProject === "function"
     ? await this.projectService.getProject(projectId).catch(() => null)
@@ -62,13 +64,6 @@ async buildAgentContext({
     }
   }
 
-  const history = await this.buildAgentHistoryContext({
-    projectId,
-    taskId,
-    currentTurnId: turnId,
-    currentMessage: message
-  });
-  if (history) parts.push("【任务历史】", history);
   return parts.join("\n\n");
 }
 };

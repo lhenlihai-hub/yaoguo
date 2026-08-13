@@ -141,3 +141,15 @@ test("Agent 历史配置读取旧键但只写新键", async () => {
   assert.equal(settings.context.compaction, undefined);
   assert.equal(JSON.stringify(persisted).includes("compaction"), false);
 });
+
+test("Agent 历史只迁移旧默认值，保留用户自定义预算", () => {
+  const upgraded = mergeSettings({
+    context: { agentHistory: { readLimit: 160, tokens: 12000 } }
+  });
+  assert.deepEqual(upgraded.context.agentHistory, { readLimit: 2000, tokens: 300000 });
+
+  const custom = mergeSettings({
+    context: { agentHistory: { readLimit: 80, tokens: 24000 } }
+  });
+  assert.deepEqual(custom.context.agentHistory, { readLimit: 80, tokens: 24000 });
+});

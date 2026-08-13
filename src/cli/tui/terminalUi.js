@@ -182,10 +182,12 @@ class YaoguoTerminalUi {
       this.theme.markdown,
       this.theme.reasoningText
     );
+    const answerDivider = new Text("", 1, 0);
     const markdown = new Markdown("", 1, 0, this.theme.markdown);
     component.addChild(workflow);
     component.addChild(reasoningTitle);
     component.addChild(reasoning);
+    component.addChild(answerDivider);
     component.addChild(markdown);
     this.insertMessage(component);
     const stream = {
@@ -193,6 +195,7 @@ class YaoguoTerminalUi {
       workflow,
       reasoningTitle,
       reasoning,
+      answerDivider,
       markdown,
       text: "",
       reasoningText: "",
@@ -214,6 +217,7 @@ class YaoguoTerminalUi {
     if (!stream || !delta) return;
     stream.streamed = true;
     stream.text += `${delta}`;
+    this.renderAnswerDivider(stream);
     stream.markdown.setText(stream.text);
     this.tui.requestRender();
   }
@@ -252,6 +256,7 @@ class YaoguoTerminalUi {
     const finalText = stream.text || `${fallback || ""}`;
     stream.markdown.setText(finalText || "未生成可显示回复。");
     this.renderReasoningTitle(stream);
+    this.renderAnswerDivider(stream);
     this.tui.requestRender();
   }
 
@@ -394,6 +399,11 @@ class YaoguoTerminalUi {
       ? `思考过程 · ${formatElapsed(stream.thinkingDurationMs)}`
       : "思考过程";
     stream.reasoningTitle.setText(ansi.muted(title));
+  }
+
+  renderAnswerDivider(stream) {
+    const visible = Boolean(stream?.reasoningText && (stream.text || stream.finished));
+    stream?.answerDivider?.setText(visible ? ansi.muted("──────── 最终结果 ────────") : "");
   }
 
   startStatusTimer() {

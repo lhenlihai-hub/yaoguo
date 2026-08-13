@@ -4,6 +4,8 @@ const crypto = require("node:crypto");
 const { DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS } = require("../ai/deepseekV4Policy");
 
 const INSECURE_DEFAULT_BRIDGE_TOKEN = "local-change-me";
+const LEGACY_AGENT_HISTORY_DEFAULT = Object.freeze({ readLimit: 160, tokens: 12000 });
+const CACHE_FRIENDLY_AGENT_HISTORY_DEFAULT = Object.freeze({ readLimit: 2000, tokens: 300000 });
 
 async function ensureDir(dir) {
   await fsp.mkdir(dir, { recursive: true });
@@ -71,9 +73,10 @@ const DEFAULT_SETTINGS = {
       }
     },
     agentHistory: {
-      readLimit: 160,
-      tokens: 12000
+      ...CACHE_FRIENDLY_AGENT_HISTORY_DEFAULT
     },
+    // 1M 窗口中保留最多 30 万 tokens 的原生会话前缀，为 38.4 万输出上限、
+    // 本轮上下文、指令和工具 schema 留出硬空间；达到预算后才滚动历史窗口。
     // Agent 活动上下文与模型物理窗口分离：大窗口不是工作集目标。
     // 达到 clearStart 后先清旧工具正文；达到 trigger 后生成无模型、可追溯 checkpoint，
     // 完整工具结果留在外部 ContextResultStore，需要时分页回读。
@@ -248,6 +251,12 @@ function migrateAgentHistorySettings(value = {}) {
     readLimit: current.readLimit ?? legacy.agentHistoryReadLimit ?? legacy.chatHistoryReadLimit,
     tokens: current.tokens ?? legacy.agentHistoryTokens ?? legacy.chatHistoryTokens
   };
+  if (
+    Number(source.context.agentHistory.readLimit) === LEGACY_AGENT_HISTORY_DEFAULT.readLimit
+    && Number(source.context.agentHistory.tokens) === LEGACY_AGENT_HISTORY_DEFAULT.tokens
+  ) {
+    source.context.agentHistory = { ...CACHE_FRIENDLY_AGENT_HISTORY_DEFAULT };
+  }
   delete source.context.compaction;
   return source;
 }

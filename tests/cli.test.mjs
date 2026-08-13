@@ -583,6 +583,19 @@ test("CLI TUI 将模型 token 流、成品与 usage 交给同一对话界面", a
     }
   };
   const result = await runTurn({
+    platformKernel: {
+      tokenLedger: {
+        async summarizeUsage(scope) {
+          assert.deepEqual(scope, { projectId: "terminal", taskId: "task" });
+          return {
+            promptTokens: 8000,
+            completionTokens: 600,
+            cacheHitTokens: 7200,
+            cacheMissTokens: 800
+          };
+        }
+      }
+    },
     workflowEngine: {
       async submitAgentInput(_payload, options) {
         assert.deepEqual(_payload.explicitOpenTargets, []);
@@ -611,7 +624,7 @@ test("CLI TUI 将模型 token 流、成品与 usage 交给同一对话界面", a
     "delta:完成。",
     "finish:已经完成。",
     "artifact:/tmp/work/report.md",
-    "usage:缓存 75% · 上下文 —"
+    "usage:缓存 90% · 上下文 —"
   ]);
 });
 

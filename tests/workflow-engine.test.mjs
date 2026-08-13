@@ -156,9 +156,10 @@ test("executeStep 从任务会话组装历史并交给同一个 Agent", async ()
 
   const result = await engine.executeStep(state, step);
 
-  assert.match(captured.runContext, /任务历史/);
-  assert.match(captured.runContext, /给董事会看/);
-  assert.match(captured.runContext, /三组对比数据/);
+  assert.doesNotMatch(captured.runContext, /任务历史/);
+  assert.deepEqual(captured.conversationMessages, [
+    { role: "user", content: "给董事会看，保留三组对比数据。" }
+  ]);
   assert.equal(captured.input, state.command);
   assert.equal("memoryQuery" in captured, false);
   assert.equal("memoryFiles" in captured, false);

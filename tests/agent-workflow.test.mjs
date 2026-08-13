@@ -84,6 +84,52 @@ test("身份与能力问题进入同一个模型回合，不由宿主即时回�
   assert.deepEqual(engine.appendedLogs.map((row) => row.role), ["user", "assistant"]);
 });
 
+test("终端输入向模型声明 TUI 宿主边界，不混入桌面成品区认知", async () => {
+  const engine = createWorkflowHarness();
+  let captured = null;
+  engine.aiRouter = detailedRouter(async (_round, payload) => {
+    captured = payload.runContext;
+    return "已按终端环境回答。";
+  });
+
+  await engine.submitAgentInput({
+    message: "删除这个文件",
+    projectId: "p1",
+    taskId: "t1",
+    source: "terminal"
+  });
+
+  assert.match(captured, /当前宿主】终端版 TUI/);
+  assert.match(captured, /当前没有桌面窗口或预览面板/);
+});
+
+test("Agent 持久化真实首轮模型输入，下一轮可原样复用缓存前缀", async () => {
+  const engine = createWorkflowHarness();
+  let persistedBody = "";
+  engine.taskSessionStore = {
+    async persistContentBody(_projectId, _taskId, content) {
+      persistedBody = content;
+      return { sha256: "b".repeat(64) };
+    }
+  };
+  await engine.persistAgentTurnOutcome({
+    outcome: {
+      reply: "完成。会保存模型输入。",
+      modelInput: "【本轮上下文】\n动态上下文\n\n【输入】\n执行任务"
+    },
+    projectId: "p1",
+    taskId: "t1",
+    turnId: "turn-1",
+    source: "terminal"
+  });
+
+  assert.match(persistedBody, /动态上下文[\s\S]*执行任务/);
+  assert.deepEqual(engine.appendedLogs.at(-1).modelInputRef, {
+    version: 1,
+    sha256: "b".repeat(64)
+  });
+});
+
 test("Agent 的 skipUserLog / skipAssistantLog 选项真实生效", async () => {
   const engine = createWorkflowHarness();
   engine.aiRouter = detailedRouter(async () => "仅返回调用方，不写任务消息记录。");
