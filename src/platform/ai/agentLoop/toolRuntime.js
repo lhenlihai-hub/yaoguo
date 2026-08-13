@@ -68,6 +68,8 @@ class AgentToolRuntime {
     this.peakActiveTokens = 0;
     this.rootRequestTokens = 0;
     this.tools = [];
+    this.transportToolOrder = [];
+    this.transportToolSchemas = new Map();
     /** @type {any[] & { cleanup?: () => Promise<void>, grantPath?: (grant:any) => void }} */
     this.baseTools = [];
     this.advertisedNames = new Set();
@@ -116,9 +118,16 @@ class AgentToolRuntime {
     return this;
   }
 
-  setAdvertisedTools(tools) {
+  setAdvertisedTools(tools, { replace = true } = {}) {
+    const names = (Array.isArray(tools) ? tools : [])
+      .map((tool) => `${tool?.name || ""}`)
+      .filter(Boolean);
+    if (!replace) {
+      for (const name of names) this.advertisedNames.add(name);
+      return;
+    }
     this.advertisedNames = new Set(
-      (Array.isArray(tools) ? tools : []).map((tool) => `${tool?.name || ""}`).filter(Boolean)
+      names
     );
   }
 
@@ -217,14 +226,30 @@ class AgentToolRuntime {
   }
 
   openAiSchemas(tools = this.tools) {
-    return (Array.isArray(tools) ? tools : []).map((tool) => ({
-      type: "function",
-      function: {
-        name: tool.name,
-        description: tool.description,
-        parameters: stripSchemaSymbols(tool.parameters)
+    for (const tool of Array.isArray(tools) ? tools : []) {
+      const name = `${tool?.name || ""}`;
+      if (!name) continue;
+      const schema = {
+        type: "function",
+        function: {
+          name,
+          description: tool.description,
+          parameters: stripSchemaSymbols(tool.parameters)
+        }
+      };
+      if (!this.transportToolSchemas.has(name)) {
+        this.transportToolOrder.push(name);
+        this.transportToolSchemas.set(name, schema);
+        continue;
       }
-    }));
+      const previous = this.transportToolSchemas.get(name);
+      if (stableSchema(previous) !== stableSchema(schema)) {
+        throw Object.assign(new Error(`工具 ${name} 的 schema 在同一 Agent 循环中发生变化。`), {
+          code: "AGENT_TOOL_SCHEMA_MUTATED"
+        });
+      }
+    }
+    return this.transportToolOrder.map((name) => this.transportToolSchemas.get(name));
   }
 
   async beforeToolCall(context, signal = null) {
@@ -667,6 +692,7 @@ class AgentToolRuntime {
       this.activeSkillActionPolicies.set(grant, normalizeSkillPolicy(policies[grant] || {}));
     }
     this.rebuildTools();
+    this.setAdvertisedTools(this.tools, { replace: false });
   }
 
   policyFor(name, args) {
@@ -996,6 +1022,10 @@ function stableSerialize(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableSerialize).join(",")}]`;
   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`).join(",")}}`;
+}
+
+function stableSchema(value) {
+  return stableSerialize(value);
 }
 
 function duplicateSideEffectResult(name) {

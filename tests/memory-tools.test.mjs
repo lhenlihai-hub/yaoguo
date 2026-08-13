@@ -50,7 +50,9 @@ test("记忆工具 schema 只暴露四种类型，不暴露 scope 或 projectId"
   assert.equal(searchProperties.scope, undefined);
   assert.equal(searchProperties.projectId, undefined);
   assert.equal(searchProperties.tags, undefined);
-  assert.match(pinMemoryTool.schema.function.description, /代码模式、架构分析、文件路径、Git 历史、调试方案/);
+  assert.match(pinMemoryTool.schema.function.description, /代码模式、架构分析、文件路径/);
+  assert.match(pinMemoryTool.schema.function.description, /Git 状态或历史、README 已有事实、调试方案/);
+  assert.match(pinProperties.valueBeyondCode.description, /源码、Git、README 或其他权威源/);
   assert.match(pinProperties.polarity.description, /positive/);
 });
 

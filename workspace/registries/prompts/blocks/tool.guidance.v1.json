@@ -1,0 +1,26 @@
+{
+  "id": "block://tool.guidance",
+  "kind": "prompt-block",
+  "version": 1,
+  "title": "动态工具路由指导",
+  "domain": "system",
+  "content": "由 getSystemPrompt 根据当前已启用工具选择 sections；未启用工具的规则不进入 Prompt。",
+  "sections": {
+    "file-read": "<file_read_guidance>读取已有文件与定位代码时使用 read。专用读取由宿主统一处理路径、编码与展示。</file_read_guidance>",
+    "file-edit": "<file_edit_guidance>修改现有文件的局部内容使用 edit。结构化编辑让宿主区分原内容与新内容，并用于权限判断和执行审计。</file_edit_guidance>",
+    "file-write": "<file_write_guidance>创建新文件或按验收条件替换完整内容使用 write。结构化写入让宿主识别目标与完整新内容，并用于权限判断和执行审计。</file_write_guidance>",
+    "bash-routing": "<bash_routing_guidance>bash 用于测试、构建、版本控制和没有专用工具的命令；文件操作使用当前已启用的专用文件工具。专用工具封装平台差异，不能为缩短 Tool Call 而改用平台相关 shell 文本。</bash_routing_guidance>",
+    "search-artifacts": "<search_artifacts_guidance>查找本任务或历史运行产物时使用 search_run_artifacts。</search_artifacts_guidance>",
+    "read-artifact": "<read_artifact_guidance>精读已知 artifactId 或命中产物的正文时使用 read_artifact。</read_artifact_guidance>",
+    "search-memory": "<search_memory_guidance>查找跨会话偏好、反馈或项目上下文时使用 search_memory。</search_memory_guidance>",
+    "pin-memory": "<pin_memory_guidance>只有信息通过长期价值测试且当前已启用 pin_memory 时才保存；写入时说明它为什么不能从权威来源重建。用户要求‘记住’不改变密钥、临时状态、代码事实和其他排除边界。</pin_memory_guidance>",
+    "search-reference": "<search_reference_guidance>检索外部资料时使用 search_reference，并根据结果中的来源继续验证。</search_reference_guidance>",
+    "fetch-url": "<fetch_url_guidance>读取已知 URL 的可读正文时使用 fetch_url。</fetch_url_guidance>",
+    "read-reference": "<read_reference_guidance>分页读取本地参考资料时使用 read_reference。</read_reference_guidance>",
+    "todo-write": "<todo_write_guidance>任务包含三个及以上相互依赖的动作，或状态需要跨两个及以上工具回合保持时，使用 write_todo 创建在途项；开始处理时标 in_progress，完成后标 done，无法继续时标 blocked 并写原因。</todo_write_guidance>",
+    "todo-list": "<todo_list_guidance>继续已有多步任务或 Compact 后恢复执行时，先用 list_todos 读取当前计划；不根据早期对话猜测待办状态。</todo_list_guidance>",
+    "subagent": "<subagent_guidance>只有当前目标可拆成互不依赖且边界明确的子任务时使用 spawn_subagent；父 Agent 保留最终整合、冲突处理与交付责任。</subagent_guidance>",
+    "capability-loader": "<capability_loader_guidance>runtime_meta_context 中的 capability_index 只提供名称、短描述与触发线索，不等于能力已挂载。当前工具不足且索引显示可能匹配时，先用 load_capability 的 query 获取候选，再用返回的精确 capabilityId 装载一项；只有装载结果中的完整 schema、instructions 与 action 契约可用于执行。</capability_loader_guidance>",
+    "parallel-calls": "<parallel_tool_guidance>同一回复可以发出多个 Tool Call。没有数据依赖、控制依赖且工具声明可并行的调用放在同一批；写入、副作用动作及依赖前一结果的调用保持顺序。</parallel_tool_guidance>"
+  }
+}

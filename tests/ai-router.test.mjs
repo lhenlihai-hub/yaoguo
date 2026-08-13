@@ -180,6 +180,20 @@ test("AiRouter 把本轮上下文放进当前输入，并保留原生会话顺�
   assert.match(messages.at(-1).content, /稳定项目契约[\s\S]*稳定上下文[\s\S]*变化标题[\s\S]*变化输入/);
 });
 
+test("Compact 类内部请求把操作指令追加到输入末尾", () => {
+  const router = new AiRouter(settings(), null);
+  const message = router.buildTaskUserMessage({
+    taskType: "memory",
+    title: "维护会话摘要",
+    instruction: "压缩以上历史",
+    input: "A\nB\nC",
+    budget: { inputTokens: 1000 },
+    instructionPlacement: "after-input"
+  });
+  assert.ok(message.indexOf("A\nB\nC") < message.indexOf("压缩以上历史"));
+  assert.match(message, /【末尾操作指令】/);
+});
+
 test("连续两轮请求完整复用上一轮 messages 作为严格前缀", async () => {
   const router = new AiRouter(
     settings(),

@@ -64,6 +64,7 @@ test("TUI 提供欢迎页、真实输入框、整合菜单与无底色蓝色用�
   assert.match(output, /model/);
   assert.match(output, /resume/);
   assert.match(output, /permissions/);
+  assert.match(output, /update/);
   assert.doesNotMatch(output, /\u001b\[48;2;20;82;138m/);
   assert.match(output, /\u001b\[38;2;121;187;255m/);
 
@@ -120,6 +121,9 @@ test("TUI 展示真实推理耗时、工作流程与完整路径", async () => {
   assert.match(footer, /All agree.*Pro.*High/);
   assert.match(footer, /\/菜单/);
   assert.doesNotMatch(footer, /\/tmp\/Yaoguo Workspace|Key|Enter|Shift\+Enter/);
+  ui.setUpdateNotice("发现新版本 v0.2.0，输入 /update 更新。");
+  assert.match(ui.taskStatus.text, /发现新版本 v0\.2\.0/);
+  ui.clearUpdateNotice();
   await ui.dispose();
 });
 

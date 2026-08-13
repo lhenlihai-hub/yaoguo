@@ -112,6 +112,8 @@ test("CLI 数据目录优先使用参数，其次环境变量，最后使用用�
   assert.equal(resolveDataRoot({}, {}, "/home/test"), "/home/test/.yaoguo/runtime");
   assert.match(helpText(), /DEEPSEEK_API_KEY/);
   assert.match(helpText(), /\/clear/);
+  assert.match(helpText(), /\/update/);
+  assert.match(helpText(), /yaoguo update/);
   assert.match(helpText(), /\/resume/);
   assert.match(helpText(), /All agree/);
   assert.doesNotMatch(helpText(), /^  \/tokens/m);

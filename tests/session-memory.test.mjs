@@ -256,6 +256,7 @@ test("SessionMemoryService 把模型维护的固定六章节原子写入任务 s
     assert.equal(state.version, 1);
     assert.equal(state.revision, 1);
     assert.equal(calls[0].internalCall, true);
+    assert.equal(calls[0].instructionPlacement, "after-input");
     assert.equal("skipAutoCompaction" in calls[0], false);
   } finally {
     await service.stop();

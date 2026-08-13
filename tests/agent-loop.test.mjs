@@ -190,6 +190,86 @@ test("通用 Agent loop 通过基础 read 工具后继续完成交付", async ()
   }
 });
 
+test("Agent loop 把宿主绑定的 Memory 形态只传给首轮 Prompt 装配", async () => {
+  const workDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-memory-context-"));
+  try {
+    const router = scriptedRouter([{ content: "完成。" }]);
+    const memoryContext = {
+      enabled: true,
+      scope: "project",
+      storageMode: "append-only",
+      autoDream: true,
+      sessionMemory: true,
+      transcript: true,
+      contextResults: true
+    };
+    await runToolLoop({
+      aiRouter: router,
+      registry: new AgentToolRegistry(),
+      toolNames: [],
+      toolCtx: {
+        agentWorkDir: workDir,
+        agentScopeAllow: [workDir],
+        memoryContext
+      },
+      runTaskArgs: { taskType: "agent", input: "完成" }
+    });
+
+    assert.deepEqual(router.invocations[0].memoryContext, memoryContext);
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
+test("Agent loop 只在首轮注入运行环境、能力索引、制作区与 Context 管理形态", async () => {
+  const workDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-runtime-meta-"));
+  try {
+    const router = scriptedRouter([{ content: "完成。" }]);
+    const capabilityCatalog = [{
+      id: "tool://spawn_subagent",
+      kind: "tool",
+      description: "委派独立子任务"
+    }];
+    const contextManagement = {
+      enabled: true,
+      toolResultMasking: true,
+      fileOffloading: true,
+      sessionCompaction: false,
+      deterministicCheckpoint: true,
+      subagentIsolation: true
+    };
+    const environmentContext = {
+      platform: "darwin",
+      architecture: "arm64",
+      shell: "/bin/zsh",
+      gitRepository: true,
+      gitRoot: workDir
+    };
+    await runToolLoop({
+      aiRouter: router,
+      registry: new AgentToolRegistry(),
+      toolNames: [],
+      toolCtx: {
+        agentWorkDir: workDir,
+        artifactWorkDir: path.join(workDir, ".candidates"),
+        scratchpadDirectory: path.join(workDir, ".candidates"),
+        agentScopeAllow: [workDir],
+        loadableCatalog: capabilityCatalog,
+        contextManagement,
+        environmentContext
+      },
+      runTaskArgs: { taskType: "agent", input: "完成" }
+    });
+
+    assert.deepEqual(router.invocations[0].capabilityCatalog, capabilityCatalog);
+    assert.deepEqual(router.invocations[0].contextManagement, contextManagement);
+    assert.deepEqual(router.invocations[0].environment, environmentContext);
+    assert.equal(router.invocations[0].scratchpadDirectory, path.join(workDir, ".candidates"));
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
 test("Pi 基础工具按声明映射原生并行模式，写入与命令保持串行", async () => {
   const workDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-tool-mode-"));
   try {
@@ -223,6 +303,30 @@ test("Pi 基础工具按声明映射原生并行模式，写入与命令保持�
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
+});
+
+test("DeepSeek tools 前缀在单次 Agent 循环内只尾部追加且拒绝 schema 漂移", () => {
+  const runtime = new AgentToolRuntime({
+    registry: {},
+    toolCtx: {},
+    runTaskArgs: {}
+  }, null);
+  const tool = (name, description = name) => ({
+    name,
+    description,
+    parameters: { type: "object", properties: {} }
+  });
+  const first = runtime.openAiSchemas([tool("read")]);
+  const appended = runtime.openAiSchemas([tool("read"), tool("write")]);
+  const contextSubset = runtime.openAiSchemas([tool("write")]);
+
+  assert.deepEqual(first.map((schema) => schema.function.name), ["read"]);
+  assert.deepEqual(appended.map((schema) => schema.function.name), ["read", "write"]);
+  assert.deepEqual(contextSubset.map((schema) => schema.function.name), ["read", "write"]);
+  assert.throws(
+    () => runtime.openAiSchemas([tool("read", "mutated")]),
+    (error) => error.code === "AGENT_TOOL_SCHEMA_MUTATED"
+  );
 });
 
 test("Pi 基础工具按 workspace 契约隔离项目区与制作区", async () => {
@@ -997,6 +1101,36 @@ test("外部参考路径不会自动变成写入位置", async () => {
   } finally {
     await rm(taskDir, { recursive: true, force: true });
     await rm(externalDir, { recursive: true, force: true });
+  }
+});
+
+test("只有显式授权的外部目录进入 Prompt 附加工作目录", async () => {
+  const taskDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-prompt-directories-"));
+  const referenceDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-prompt-reference-dir-"));
+  const referenceFile = path.join(referenceDir, "reference.md");
+  try {
+    await writeFile(referenceFile, "# 参考原文", "utf8");
+    const engine = {
+      ...agentExecutionActions,
+      settingsService: {
+        get: async () => ({ permissions: { fileSystem: { fullAccess: false } } })
+      },
+      projectService: {
+        getTaskDir() { return taskDir; },
+        async getTask() { return { workspacePath: "" }; }
+      }
+    };
+    const toolCtx = await engine._buildAgentToolContext({
+      projectId: "project-test",
+      taskId: "task-test",
+      fileReferences: [await realpath(referenceDir), await realpath(referenceFile)]
+    });
+
+    assert.deepEqual(toolCtx.additionalWorkingDirectories, [await realpath(referenceDir)]);
+    assert.ok(toolCtx.authorizedReferencePaths.includes(await realpath(referenceFile)));
+  } finally {
+    await rm(taskDir, { recursive: true, force: true });
+    await rm(referenceDir, { recursive: true, force: true });
   }
 });
 

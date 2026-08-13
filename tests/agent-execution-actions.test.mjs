@@ -156,6 +156,27 @@ test("_buildAgentToolContext 按任务 Agent profile 绑定唯一 Memdir", async
       memoryMode: "append-only"
     });
     assert.equal(context.memoryStore != null, true);
+    assert.deepEqual(context.memoryContext, {
+      enabled: true,
+      scope: "agent",
+      storageMode: "append-only",
+      autoDream: false,
+      sessionMemory: false,
+      transcript: false,
+      contextResults: true
+    });
+    assert.deepEqual(context.contextManagement, {
+      enabled: true,
+      toolResultMasking: true,
+      fileOffloading: true,
+      sessionCompaction: false,
+      deterministicCheckpoint: true,
+      subagentIsolation: false
+    });
+    assert.equal(context.scratchpadDirectory, path.join(workspace, ".candidates"));
+    assert.equal(typeof context.environmentContext.platform, "string");
+    assert.equal(typeof context.environmentContext.architecture, "string");
+    assert.equal(typeof context.environmentContext.gitRepository, "boolean");
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }

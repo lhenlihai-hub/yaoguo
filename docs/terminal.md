@@ -17,6 +17,8 @@ curl -fsSL https://raw.githubusercontent.com/lhenlihai-hub/yaoguo/main/install.s
 yaoguo
 ```
 
+启动后会在后台限频检测稳定更新；发现新版本时，状态区会给出简短提示。输入 `/update` 或直接执行 `腰果 update` 即可原地更新，不需要先卸载。更新会先在临时目录完成下载与校验，失败时保留当前版本。
+
 首次进入后输入 `/model`，选择 Pro 或 Flash、设置思考强度，并在隐藏输入中粘贴 DeepSeek API Key。也可以继续通过 `export DEEPSEEK_API_KEY="你的密钥"` 配置环境变量；非交互任务需要提前使用其中一种方式完成配置。
 
 程序、会话、配置和记忆都收口在 `~/.yaoguo`；`~/.local/bin` 只有 `yaoguo` 与 `腰果` 两个命令链接。如果 `~/.local/bin` 尚未加入 `PATH`，安装器会更新当前 shell 的启动文件；管道脚本无法修改父 shell，因此需要新开终端，或按提示执行一次 `export PATH=...`。
@@ -34,6 +36,7 @@ yaoguo
 /new          在当前工作空间新建会话
 /permissions  切换 Ask / All agree 授权模式
 /clear        清空当前屏幕，不删除已保存会话
+/update       检测并更新到最新稳定版
 /help         查看命令与快捷键
 /quit         退出
 ```

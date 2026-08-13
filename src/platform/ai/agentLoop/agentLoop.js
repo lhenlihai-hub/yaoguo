@@ -155,7 +155,7 @@ function createKernelState({ options, runtime, executionBudget, maxRounds, contr
 
 function createAiRouterStreamFn(state) {
   return async (_model, context) => {
-    state.runtime.setAdvertisedTools(context.tools);
+    state.runtime.setAdvertisedTools(context.tools, { replace: false });
     if (state.modelCalls >= state.maxModelCalls) {
       const error = Object.assign(new Error("Agent 已达到本地模型轮次上限。"), {
         code: "AGENT_MODEL_ROUND_LIMIT"
@@ -260,6 +260,15 @@ async function startAiRouterTask(state, tokenBuffer) {
   const response = await state.options.aiRouter.runTaskDetailed({
     ...state.options.runTaskArgs,
     tools: state.runtime.openAiSchemas(),
+    memoryContext: state.runtime.loopToolCtx.memoryContext || null,
+    contextManagement: state.runtime.loopToolCtx.contextManagement || null,
+    capabilityCatalog: state.runtime.loopToolCtx.loadableCatalog || [],
+    workingDirectory: state.runtime.loopToolCtx.agentWorkDir || "",
+    scratchpadDirectory: state.runtime.loopToolCtx.scratchpadDirectory || "",
+    additionalWorkingDirectories: state.runtime.loopToolCtx.additionalWorkingDirectories || [],
+    mcpClients: state.runtime.loopToolCtx.mcpClients || [],
+    featureGates: state.runtime.loopToolCtx.featureGates || null,
+    environment: state.runtime.loopToolCtx.environmentContext || null,
     onToken: tokenBuffer.capture,
     signal: state.executionBudget.signal || state.options.runTaskArgs?.signal || null,
     executionBudget: state.executionBudget,

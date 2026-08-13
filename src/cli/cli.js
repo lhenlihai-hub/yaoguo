@@ -13,6 +13,12 @@ const { isPathInside } = require("../platform/shared/pathSafety");
 const { summarizeNameFromMessage, isAutoTaskTitle } = require("../platform/runtime/contentSignals");
 const { DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS } = require("../platform/ai/deepseekV4Policy");
 const { runUninstall, archiveTaskPublishedArtifacts } = require("./uninstall");
+const {
+  checkForUpdate,
+  installLatestUpdate,
+  releaseLabel,
+  runUpdateCommand
+} = require("./update");
 
 const PACKAGE_ROOT = path.resolve(__dirname, "../..");
 const PACKAGE_JSON = require(path.join(PACKAGE_ROOT, "package.json"));
@@ -147,6 +153,7 @@ function helpText() {
     "  yaoguo [选项] [任务]",
     "  echo '任务' | yaoguo [选项]",
     "  yaoguo                 进入交互会话",
+    "  yaoguo update          检测并更新到最新稳定版",
     "  yaoguo uninstall       卸载程序和运行数据，保留已发布成品",
     "",
     "选项：",
@@ -169,6 +176,7 @@ function helpText() {
     "  /new                    在当前工作空间新建会话",
     "  /permissions            切换 Ask / All agree 授权模式",
     "  /clear                  清空当前屏幕，不删除已保存会话",
+    "  /update                 检测并更新到最新稳定版",
     "  /help                   查看交互命令与快捷键",
     "  /quit                   退出交互会话",
     "",
@@ -1118,6 +1126,7 @@ async function runInteractiveReadline(services, terminal, session, env = process
     initialModel.available ? "" : "\n输入 /model 完成模型与 API Key 设置。",
     "\n输入 /exit 退出。\n\n"
   ].join(""));
+  startAutomaticUpdateCheck(terminal);
   while (true) {
     let message;
     try {
@@ -1147,6 +1156,10 @@ async function runInteractiveReadline(services, terminal, session, env = process
     }
     if (message.toLowerCase() === "/permissions") {
       await runPermissionMenu(services.settingsService, terminal);
+      continue;
+    }
+    if (message.toLowerCase() === "/update") {
+      await runInteractiveUpdate(terminal);
       continue;
     }
     if (message.toLowerCase() === "/help") {
@@ -1196,6 +1209,7 @@ async function runInteractiveTui(services, terminal, session, env = process.env)
       }
     }
   });
+  startAutomaticUpdateCheck(terminal);
   try {
     await ui.waitForExit();
   } finally {
@@ -1243,6 +1257,10 @@ async function handleTuiSubmission(services, terminal, session, message, env = p
     terminal.ui.addNotice("已清空当前屏幕，已保存的会话与成品未删除。");
     return;
   }
+  if (command === "/update") {
+    await runInteractiveUpdate(terminal);
+    return;
+  }
   if (command === "/help") {
     terminal.ui.addNotice([
       "/model  模型与 API Key",
@@ -1251,6 +1269,7 @@ async function handleTuiSubmission(services, terminal, session, message, env = p
       "/new    新建会话",
       "/permissions  Ask / All agree",
       "/clear  清空当前屏幕",
+      "/update 检测并更新腰果",
       "/quit   退出",
       "Enter 发送 · Shift+Enter 换行 · Esc/Ctrl+C 中止任务"
     ].join("\n"));
@@ -1273,11 +1292,81 @@ async function handleTuiSubmission(services, terminal, session, message, env = p
   }
 }
 
+function startAutomaticUpdateCheck(terminal) {
+  if (terminal.updateCheckStarted) return;
+  terminal.updateCheckStarted = true;
+  const controller = new AbortController();
+  terminal.updateCheckController = controller;
+  const promise = checkForUpdate({
+    packageRoot: PACKAGE_ROOT,
+    signal: controller.signal,
+    silentErrors: true,
+    silentUnsupported: true
+  }).then((result) => {
+    terminal.updateStatus = result;
+    if (!result?.available) return result;
+    const message = `发现新版本 ${releaseLabel(result.latest)}，输入 /update 更新。`;
+    if (terminal.ui) terminal.ui.setUpdateNotice(message);
+    else terminal.error.write(`\n${message}\n`);
+    return result;
+  }).catch(() => null).finally(() => {
+    if (terminal.updateCheckController === controller) terminal.updateCheckController = null;
+  });
+  terminal.updateCheckPromise = promise;
+}
+
+async function runInteractiveUpdate(terminal) {
+  if (terminal.activeController) {
+    terminal.ui?.addNotice("请等待当前任务结束后再更新。");
+    return;
+  }
+  const controller = new AbortController();
+  terminal.activeController = controller;
+  if (terminal.ui) terminal.ui.setBusy(true, "正在检查更新…");
+  else terminal.error.write("正在检查更新…\n");
+  try {
+    const result = await installLatestUpdate({
+      packageRoot: PACKAGE_ROOT,
+      signal: controller.signal,
+      onStatus(label) {
+        if (terminal.ui) terminal.ui.setActivity(label);
+        else if (label !== "正在检查更新…") terminal.error.write(`${label}\n`);
+      }
+    });
+    terminal.updateStatus = result;
+    if (result.updated) {
+      terminal.ui?.clearUpdateNotice();
+      const message = `已更新到 ${releaseLabel(result.current)}。退出并重新运行腰果后生效。`;
+      if (terminal.ui) terminal.ui.addSuccess(message);
+      else terminal.output.write(`${message}\n`);
+    } else {
+      const message = `当前已是最新版本 ${releaseLabel(result.current || result.latest)}。`;
+      if (terminal.ui) terminal.ui.addSuccess(message);
+      else terminal.output.write(`${message}\n`);
+    }
+  } catch (error) {
+    if (isTerminalAbort(error)) {
+      terminal.ui?.addNotice("更新已取消，当前版本未改变。");
+      if (!terminal.ui) terminal.error.write("更新已取消，当前版本未改变。\n");
+    } else {
+      const message = `更新失败，当前版本未改变：${error?.message || error}`;
+      if (terminal.ui) terminal.ui.addError(message);
+      else terminal.error.write(`${message}\n`);
+    }
+  } finally {
+    if (terminal.activeController === controller) terminal.activeController = null;
+    terminal.ui?.setBusy(false);
+  }
+}
+
 function isTerminalAbort(error) {
   return error?.name === "AbortError" || /取消|中止|abort/i.test(`${error?.message || error || ""}`);
 }
 
 async function main(argv = process.argv.slice(2), streams = {}) {
+  if (argv[0] === "update") {
+    return runUpdateCommand(argv.slice(1), { packageRoot: PACKAGE_ROOT, streams });
+  }
   if (argv[0] === "uninstall") {
     return runUninstall(argv.slice(1), { packageRoot: PACKAGE_ROOT, streams });
   }
@@ -1322,6 +1411,7 @@ async function main(argv = process.argv.slice(2), streams = {}) {
     }
     return 0;
   } finally {
+    terminal.updateCheckController?.abort?.(new Error("终端进程正在退出"));
     terminal.rl?.close();
     await terminal.ui?.dispose?.();
     await stopServices(services);
@@ -1366,5 +1456,7 @@ module.exports = {
   resolveExplicitOpenTargets,
   runTurn,
   runInteractive,
+  startAutomaticUpdateCheck,
+  runInteractiveUpdate,
   main
 };

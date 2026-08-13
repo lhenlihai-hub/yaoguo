@@ -149,7 +149,7 @@ function inspectTerminalInstaller() {
   if (!installer.includes('${HOME}/.yaoguo') || !installer.includes("install.json")) {
     failures.push("安装脚本必须使用腰果专属目录并写入可验证的安装记录");
   }
-  if (!readme.includes("curl -fsSL https://raw.githubusercontent.com/lhenlihai-hub/yaoguo/main/install.sh | sh")) {
+  if (!/curl (?:--retry 5 --retry-all-errors )?-fsSL https:\/\/raw\.githubusercontent\.com\/lhenlihai-hub\/yaoguo\/main\/install\.sh \| sh/.test(readme)) {
     failures.push("README 缺少标准一行安装命令");
   }
 }

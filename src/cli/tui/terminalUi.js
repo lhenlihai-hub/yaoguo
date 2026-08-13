@@ -9,6 +9,7 @@ const COMMANDS = Object.freeze([
   { name: "new", description: "在当前工作空间新建会话" },
   { name: "permissions", description: "Ask / All agree 授权模式" },
   { name: "clear", description: "清空当前屏幕，不删除会话" },
+  { name: "update", description: "检测并更新腰果" },
   { name: "help", description: "查看终端菜单与快捷键" },
   { name: "quit", description: "退出腰果" }
 ]);
@@ -33,6 +34,7 @@ class YaoguoTerminalUi {
     this.keyAvailable = Boolean(options.keyAvailable);
     this.version = `${options.version || "0.0.0"}`;
     this.usageText = "";
+    this.updateNotice = "";
     this.activity = "";
     this.busy = false;
     this.taskStartedAt = 0;
@@ -437,6 +439,15 @@ class YaoguoTerminalUi {
     this.renderStatus();
   }
 
+  setUpdateNotice(text = "") {
+    this.updateNotice = `${text || ""}`;
+    this.renderStatus();
+  }
+
+  clearUpdateNotice() {
+    this.setUpdateNotice("");
+  }
+
   renderStatus() {
     const permission = this.permissionLabel === "All agree"
       ? ansi.yellow("All agree")
@@ -450,8 +461,12 @@ class YaoguoTerminalUi {
     ].join(ansi.muted(" · "));
     const taskState = this.busy
       ? `${this.activity || "正在运行"} · ${formatElapsed(Date.now() - this.taskStartedAt)}`
-      : "就绪";
-    this.taskStatus.setText(this.busy ? ansi.blueBright(taskState) : ansi.muted(taskState));
+      : (this.updateNotice || "就绪");
+    this.taskStatus.setText(
+      this.busy
+        ? ansi.blueBright(taskState)
+        : (this.updateNotice ? ansi.yellow(taskState) : ansi.muted(taskState))
+    );
     this.status.setParts(left, ansi.muted("/菜单"));
     this.tui.requestRender();
   }

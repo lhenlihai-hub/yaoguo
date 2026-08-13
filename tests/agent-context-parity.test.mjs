@@ -55,8 +55,7 @@ test("直接输入与 agent-default 使用同一套任务上下文，只允许�
   assert.doesNotMatch(workflow, /【项目记忆与参考锚】|【已固定长期记忆】/);
   assert.match(direct, /【任务引用资料】/);
   assert.doesNotMatch(direct, /【任务历史】/);
-  assert.match(direct, /宿主不预设发布数量或上限/);
-  assert.doesNotMatch(direct, /只发布 1 个|最多 4 个/);
+  assert.doesNotMatch(direct, /【文件制作与交付】|workspace=artifact|宿主不预设发布数量或上限/);
   assert.doesNotMatch(direct, /本轮唯一消息/);
   assert.doesNotMatch(workflow, /本轮唯一消息/);
   assert.equal(calls.references, 2);

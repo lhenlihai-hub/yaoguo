@@ -24,6 +24,7 @@ const {
 const { validateGrantedLocalItem } = require("../../../platform/shared/localPathGrant");
 const { assertSafePathSegment, isPathInside } = require("../../../platform/shared/pathSafety");
 const { agentMemoryContext } = require("../../../platform/memory/memdir/agentMemoryProfile");
+const { resolveGitCommonDirectory } = require("../../../platform/memory/memdir/memdirPaths");
 const { GENERATE_DOCUMENT_TOOL } = require("./agent/generateDocumentTool");
 const { GENERATE_VISUAL_TOOL } = require("./agent/generateVisualTool");
 
@@ -365,11 +366,15 @@ const agentExecutionActions = {
       || (projectId && this.projectService?.getProjectDir
         ? this.projectService.getProjectDir(projectId)
         : agentWorkDir);
+    const memoryProfile = agentMemoryContext(task?.agentMemory || {});
     const memoryStore = memoryContextRoot && this.projectService?.memoryStore?.forContext
       ? await this.projectService.memoryStore.forContext({
         workspaceRoot: memoryContextRoot,
-        ...agentMemoryContext(task?.agentMemory || {})
+        ...memoryProfile
       })
+      : null;
+    const memoryInfo = memoryStore?.info
+      ? await memoryStore.info().catch(() => null)
       : null;
     await this.projectService?.ensureAgentFileIndex?.(
       projectId,
@@ -377,6 +382,10 @@ const agentExecutionActions = {
       workspacePath || taskDir
     ).catch(() => null);
     const settings = await this.settingsService?.get?.().catch(() => ({})) || {};
+    const gitCommonDirectory = workspacePath
+      ? await resolveGitCommonDirectory(workspacePath).catch(() => "")
+      : "";
+    const contextManagementEnabled = settings.context?.agentLoop?.enabled !== false;
     const fullFileSystemAccess = settings.permissions?.fileSystem?.fullAccess === true;
     const fileSystemRoot = fullFileSystemAccess && agentWorkDir
       ? path.parse(path.resolve(agentWorkDir)).root
@@ -384,9 +393,13 @@ const agentExecutionActions = {
     const requestedReferencePaths = (Array.isArray(fileReferences) ? fileReferences : [])
       .map((file) => `${file || ""}`.trim())
       .filter(Boolean);
-    const authorizedReferencePaths = await Promise.all(
-      requestedReferencePaths.map(async (file) => (await validateGrantedLocalItem(file)).path)
+    const authorizedReferenceItems = await Promise.all(
+      requestedReferencePaths.map((file) => validateGrantedLocalItem(file))
     );
+    const authorizedReferencePaths = authorizedReferenceItems.map((item) => item.path);
+    const additionalWorkingDirectories = [...new Set(authorizedReferenceItems
+      .filter((item) => item.kind === "directory" && item.path !== workspacePath)
+      .map((item) => item.path))];
     const readScope = [...new Set(
       [taskDir, workspacePath, runDir, fileSystemRoot, ...authorizedReferencePaths].filter(Boolean)
     )];
@@ -415,6 +428,40 @@ const agentExecutionActions = {
       todoStore: this.todoStore || null,
       checkpointStore: this.checkpointStore || null,
       memoryStore,
+      memoryContext: memoryStore ? {
+        enabled: true,
+        scope: memoryInfo?.scope || memoryStore.profile?.scope || memoryProfile.memoryScope,
+        storageMode: memoryInfo?.storageMode || memoryStore.profile?.mode || memoryProfile.memoryMode,
+        autoDream: Boolean(this.autoDreamService?.scheduleMemoryWrite),
+        sessionMemory: Boolean(
+          settings.context?.sessionMemory?.enabled !== false
+          && this.sessionMemoryService?.beginTurn
+          && projectId
+          && taskId
+        ),
+        transcript: Boolean(this.taskSessionStore && projectId && taskId),
+        contextResults: Boolean(taskDir)
+      } : null,
+      contextManagement: {
+        enabled: contextManagementEnabled,
+        toolResultMasking: contextManagementEnabled,
+        fileOffloading: Boolean(taskDir),
+        sessionCompaction: Boolean(
+          contextManagementEnabled
+          && settings.context?.sessionMemory?.enabled !== false
+          && this.sessionMemoryService?.beginTurn
+          && projectId
+          && taskId
+        ),
+        deterministicCheckpoint: contextManagementEnabled,
+        subagentIsolation: Boolean(this.aiRouter && registry)
+      },
+      environmentContext: {
+        platform: process.platform,
+        architecture: process.arch,
+        shell: process.env.SHELL || process.env.ComSpec || "",
+        gitRepository: Boolean(gitCommonDirectory)
+      },
       referenceService: this.referenceService || null,
       webSearchService: this.webSearchService || null,
       projectService: this.projectService || null,
@@ -441,6 +488,7 @@ const agentExecutionActions = {
       skillWriteScopeAllow: agentWriteScope,
       agentWorkDir,
       artifactWorkDir: candidateDir || agentWorkDir,
+      scratchpadDirectory: candidateDir || "",
       defaultArtifactDestination: workspacePath,
       workspacePath,
       agentScopeAllow: readScope,
@@ -457,6 +505,7 @@ const agentExecutionActions = {
       agentOpenExactAllow: normalizeExplicitOpenTargets(explicitOpenTargets),
       agentOpenScopeDeny: hostReadDeny,
       authorizedReferencePaths,
+      additionalWorkingDirectories,
       explicitOutputTargets: normalizeExplicitOutputTargets(explicitOutputTargets),
       explicitOutputDenyRoots: [this.paths?.workspace, installationRoot].filter(Boolean),
       contextResultDir: taskDir

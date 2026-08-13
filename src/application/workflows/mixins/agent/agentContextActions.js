@@ -1,4 +1,3 @@
-const path = require("node:path");
 const { estimateTokens, truncateForPromptTokens } = require("../../../../platform/runtime");
 
 module.exports = {
@@ -21,17 +20,6 @@ async buildAgentContext({
     task?.brief ? `任务说明：${task.brief}` : ""
   ].filter(Boolean);
   if (taskScope.length) parts.push("【任务范围】", taskScope.join("\n"));
-
-  const taskDir = projectId && taskId && typeof this.projectService?.getTaskDir === "function"
-    ? this.projectService.getTaskDir(projectId, taskId)
-    : "";
-  if (taskDir) {
-    parts.push("【文件制作与交付】", [
-      `内部制作区：${path.join(taskDir, ".candidates")}`,
-      "制作文档、演示文稿、表格、图片或网页时，write/edit/bash 选择 workspace=artifact，源稿、生成脚本、依赖清单、预览、缓存和中间文件全部写入内部制作区；普通项目源码使用 workspace=project。",
-      "由同一个 Agent 根据用户目标与验收条件逐个判断交付物：需要交给用户的文件声明 deliverable、检查并发布；过程文件保留在内部制作区。宿主不预设发布数量或上限。"
-    ].join("\n"));
-  }
 
   if (state && step && typeof this.buildRunContext === "function") {
     const executionContext = await this.buildRunContext(state, step).catch(() => "");

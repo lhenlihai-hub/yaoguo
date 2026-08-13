@@ -1,6 +1,6 @@
 {
   "name": "yaoguo",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "基于 Pi、仅支持 DeepSeek 的本地终端 Agent",
   "author": "刘海涛 <319895455@qq.com>",
   "private": true,
@@ -26,7 +26,8 @@
     "CONTRIBUTING.md",
     "SECURITY.md",
     "THIRD_PARTY_NOTICES.md",
-    "licenses/"
+    "licenses/",
+    "release.json"
   ],
   "type": "commonjs",
   "engines": {

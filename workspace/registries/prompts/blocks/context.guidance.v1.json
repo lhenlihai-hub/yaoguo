@@ -1,0 +1,16 @@
+{
+  "id": "block://context.guidance",
+  "kind": "prompt-block",
+  "version": 1,
+  "title": "动态上下文生命周期指导",
+  "domain": "system",
+  "content": "由 getSystemPrompt 根据当前 Agent loop 的真实上下文管理能力选择 sections。",
+  "sections": {
+    "external-context": "<external_context>当前模型窗口只包含已注入的 System、Messages 与 Tool Result。磁盘文件、ContextResultStore 和子 Agent 局部历史是可按需读取的外部上下文；没有读取就不能声称知道其正文，Compact 后需要细节时重新读取权威来源。</external_context>",
+    "tool-result-masking": "<tool_result_masking>活动上下文接近宿主配置阈值时，旧 Tool Result 正文会被 receipt 替换，但 Tool Call、结果状态、预览与 resultRef 保留。receipt 不是工具从未执行；需要原文时用 read_context_result 分页回读，不能根据截断预览补造中间内容。</tool_result_masking>",
+    "file-offloading": "<context_file_offloading>超长 Tool Result 由 ContextResultStore 外置，模型只收到预览与 resultRef；这些临时原文服务当前 Agent turn，不能当成长期记忆、成品或永久文件。需要引用、比较或继续处理被省略部分时先回读对应范围。</context_file_offloading>",
+    "session-compact": "<session_compact>超过活动上下文阈值后，宿主用渐进维护的 session/memory.md 加近期原始消息建立新 episode；若摘要不可用则生成确定性 action checkpoint。摘要用于连续执行，不证明当前文件、Git、网络或进程状态。</session_compact>",
+    "deterministic-checkpoint": "<deterministic_checkpoint>超过活动上下文阈值后，宿主以初始目标、近期动作和 resultRef 生成确定性 checkpoint，替换不再需要常驻的旧消息。继续执行时按 resultRef 或权威文件恢复细节。</deterministic_checkpoint>",
+    "subagent-isolation": "<subagent_context>spawn_subagent 在独立 context window 中工作，只看到父 Agent 写入的自包含 prompt；主上下文只接收子结果和有界元数据，不接收其完整推理与全部工具历史。父 Agent 负责核对结论、解决冲突和最终交付。</subagent_context>"
+  }
+}

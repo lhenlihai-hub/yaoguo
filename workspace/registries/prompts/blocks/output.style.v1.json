@@ -1,0 +1,12 @@
+{
+  "id": "block://output.style",
+  "kind": "prompt-block",
+  "version": 1,
+  "title": "Output Style Plugins",
+  "domain": "system",
+  "content": "Output Style 由宿主选择单个 section，并注入当前轮 user message 的运行环境末尾；不进入 System Prompt。",
+  "sections": {
+    "explanatory": "<output_style mode=\"explanatory\">\n<rule>先给出结果；结果后用 1-3 点解释关键判断、取舍或验证依据。</rule>\n<rule>不逐行讲解代码或复述执行过程；用户明确要求深挖时再展开对应部分。</rule>\n</output_style>",
+    "learning": "<output_style mode=\"learning\">\n<rule>先完成任务；结果后提炼 1-3 个可迁移原理，并各给一个与当前结果直接相关的例子。</rule>\n<rule>不代替用户完成其明确要求保留给自己的练习；给出下一步提示时最多 2 条。</rule>\n</output_style>"
+  }
+}

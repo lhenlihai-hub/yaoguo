@@ -200,7 +200,15 @@ test("通道 A 是首条 user message，通道 B 是独立稳定 system section"
   assert.match(request.messages[2].content, /当前用户输入/);
   assert.match(request.messages[0].content, /<memory_behavior>/);
   assert.doesNotMatch(request.messages[0].content, /project-rule/);
-  assert.equal(router._systemPromptSectionCache.size, 2);
+  const promptSectionCacheKeys = [...router._systemPromptSectionCache.keys()];
+  assert.deepEqual(
+    promptSectionCacheKeys.filter((key) => !key.startsWith("dynamic:")).sort(),
+    ["memory.behavior", "memory.cache"]
+  );
+  assert.equal(
+    promptSectionCacheKeys.filter((key) => key.startsWith("dynamic:tool-guidance:")).length,
+    1
+  );
 
   const internal = await router.prepareTaskRequest({
     taskType: "review",

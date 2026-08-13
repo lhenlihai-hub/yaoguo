@@ -16,6 +16,11 @@ const { resolveMaxTokens } = require("./maxTokensRegistry");
 const { resolveDeepSeekV4Policy } = require("./deepseekV4Policy");
 const { claimExecutionBudget } = require("./agentTools/executionBudget");
 const { RegistryService } = require("../registries/registryService");
+const {
+  getSystemPrompt,
+  compileSystemPromptSections,
+  requiredPromptSectionError
+} = require("./prompts");
 
 class AiRouter {
   constructor(settingsService, paths = null, options = {}) {
@@ -25,6 +30,7 @@ class AiRouter {
     this.modelGateway = new ModelGateway();
     this.registryService = options.registryService || (paths ? new RegistryService(paths) : null);
     this.memoryCacheService = options.memoryCacheService || null;
+    this.clock = typeof options.clock === "function" ? options.clock : () => new Date();
   }
 
   async runTask(args = {}) {
@@ -63,6 +69,17 @@ class AiRouter {
     instructionReminder = "",
     instructionMemorySummary = null,
     memoryCacheScope = "",
+    memoryContext = null,
+    contextManagement = null,
+    capabilityCatalog = [],
+    workingDirectory = "",
+    scratchpadDirectory = "",
+    additionalWorkingDirectories = [],
+    mcpClients = [],
+    featureGates = null,
+    environment = null,
+    outputStyleConfig = null,
+    instructionPlacement = "before-input",
     internalCall = false,
     projectId = "",
     taskId = "",
@@ -94,7 +111,10 @@ class AiRouter {
         contentFilterSafe, jsonMode, responseFormat,
         onToken, onReasoning, tools, toolChoice, onToolCalls, signal: effectiveSignal,
         pinnedSections, conversationMessages, instructionReminder, instructionMemorySummary,
-        memoryCacheScope,
+        memoryCacheScope, memoryContext, contextManagement, capabilityCatalog,
+        workingDirectory, scratchpadDirectory, additionalWorkingDirectories, mcpClients, featureGates, environment,
+        outputStyleConfig: outputStyleConfig || settings.outputStyle || null,
+        instructionPlacement,
         internalCall, projectId, taskId, runId, stepId,
         agentStage, thinkingOverride, reasoningEffortOverride, maxOutputTokens, executionBudget,
         providerAttemptPreclaimed: false, allowTruncatedResponse
@@ -120,6 +140,10 @@ class AiRouter {
         taskType, title, instruction, input, runContext, contextProfile, contextBudget,
         contentFilterSafe,
         pinnedSections, conversationMessages, instructionReminder, instructionMemorySummary, memoryCacheScope,
+        memoryContext, contextManagement, capabilityCatalog,
+        workingDirectory, scratchpadDirectory, additionalWorkingDirectories, mcpClients, featureGates, environment,
+        outputStyleConfig: outputStyleConfig || settings.outputStyle || null,
+        instructionPlacement,
         internalCall, tools, executionBudget, signal: effectiveSignal
       });
       const startedAt = new Date();
@@ -395,25 +419,12 @@ class AiRouter {
   // 所有面向用户的模型调用共享同一人格、行为边界与审美原则。
   // taskType 只保留为模型策略、预算与遥测元数据，不改变人格或输出方法。
   // internalCall 走 assembleInternalSystemPrompt，不接收 soul 或审美原则。
-  async assembleSystemPromptSections(_taskType = "", { cacheScope = "" } = {}) {
-    const soul = await this.loadSystemPromptBlock("block://soul.zh", { required: true });
-    const systemAgentBlock = await this.loadSystemPromptBlock("block://system.agent", { required: true });
-    const memoryCache = await this.loadSystemPromptSection(
-      "block://system.agent",
-      "memory.cache",
-      { required: true, cacheScope }
-    );
-    const memoryBehavior = await this.loadSystemPromptSection(
-      "block://system.agent",
-      "memory.behavior",
-      { required: true, cacheScope }
-    );
-    const aestheticPrinciple = await this.loadSystemPromptBlock("block://aesthetic.baseline.zh", { required: true });
-    return [soul, systemAgentBlock, memoryCache, memoryBehavior, aestheticPrinciple];
+  async assembleSystemPromptSections(_taskType = "", options = {}) {
+    return getSystemPrompt(this, options);
   }
 
   async assembleSystemPrompt(taskType = "", options = {}) {
-    return (await this.assembleSystemPromptSections(taskType, options)).join("\n\n");
+    return compileSystemPromptSections(await this.assembleSystemPromptSections(taskType, options));
   }
 
   // System prompt 资产加载（带 in-memory 缓存）。
@@ -434,6 +445,25 @@ class AiRouter {
     const content = typeof row?.asset?.content === "string" ? row.asset.content.trim() : "";
     if (content) this._systemPromptBlockCache.set(blockId, content);
     return content;
+  }
+
+  async loadSystemPromptAsset(blockId = "", { required = false } = {}) {
+    if (!blockId) return null;
+    if (!this._systemPromptAssetCache) this._systemPromptAssetCache = new Map();
+    if (this._systemPromptAssetCache.has(blockId)) return this._systemPromptAssetCache.get(blockId);
+    if (!this.registryService) {
+      if (required) {
+        const error = new Error(`缺少 Prompt Registry，无法加载必需资产：${blockId}`);
+        error.code = "REQUIRED_PROMPT_UNAVAILABLE";
+        error.blockId = blockId;
+        throw error;
+      }
+      return null;
+    }
+    const row = await this.registryService.getPromptBlock(blockId, { required });
+    const asset = row?.asset && typeof row.asset === "object" ? row.asset : null;
+    if (asset) this._systemPromptAssetCache.set(blockId, asset);
+    return asset;
   }
 
   async loadSystemPromptSection(blockId = "", sectionId = "", { required = false, cacheScope = "" } = {}) {
@@ -461,14 +491,6 @@ class AiRouter {
     return this._systemPromptSectionCache;
   }
 
-}
-
-function requiredPromptSectionError(blockId, sectionId) {
-  const error = new Error(`缺少必需 Prompt section：${blockId}#${sectionId}`);
-  error.code = "REQUIRED_PROMPT_SECTION_UNAVAILABLE";
-  error.blockId = blockId;
-  error.sectionId = sectionId;
-  return error;
 }
 
 Object.assign(

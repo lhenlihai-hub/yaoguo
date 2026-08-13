@@ -11,10 +11,10 @@ const PIN_MEMORY_TOOL_SCHEMA = {
     description: [
       "把代码之外、跨会话仍有价值的信息写入宿主已绑定的当前 Agent Markdown Memdir。",
       "只能选择 user、feedback、project、reference 四种类型；先由你判断是否值得保存，再调用。",
-      "user 仅保存用户画像；feedback 同时保存用户确认的成功做法与纠正；",
+      "user 仅保存用户画像；feedback 同时保存触发场景、评价理由与应复用或避免的做法；",
       "project 仅保存无法从仓库推导的项目上下文，日期必须绝对化；",
       "reference 只保存外部事实源的指针。",
-      "不要保存代码模式、架构分析、文件路径、Git 历史、调试方案、会话转录、临时状态、推测或秘密。"
+      "不要保存代码模式、架构分析、文件路径、Git 状态或历史、README 已有事实、调试方案、会话转录、临时状态、推测或秘密。"
     ].join(""),
     parameters: {
       type: "object",
@@ -54,7 +54,7 @@ const PIN_MEMORY_TOOL_SCHEMA = {
         valueBeyondCode: {
           type: "string",
           maxLength: 300,
-          description: "说明为什么它不能从代码重新推导，并且跨会话仍有价值。"
+          description: "说明为什么它不能从源码、Git、README 或其他权威源重建，以及未来会改变什么判断。"
         },
         polarity: {
           type: "string",

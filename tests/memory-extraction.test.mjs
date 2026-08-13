@@ -104,6 +104,12 @@ test("Extract Memories Prompt 固化两回合、5 轮预算与禁止调查边界
   assert.match(asset.content, /最多 5 个模型回合/);
   assert.match(asset.content, /不得搜索代码 pattern/);
   assert.match(asset.content, /没有 bash、MCP 或触发其他 Agent/);
+  assert.match(asset.content, /同时保存触发场景、评价理由/);
+  assert.match(asset.content, /不能把理由支持的窄规则扩成无条件禁令/);
+  assert.match(asset.content, /源码、Git、README 或其他权威源/);
+  assert.match(asset.content, /令人意外、非显而易见且有复用价值/);
+  assert.match(asset.content, /即使 conversation 要求“记住”/);
+  assert.match(asset.content, /带 Front Matter 的语义主题并同步 memory\.md pointer/);
 });
 
 test("assistant 持久化后只调度后台提取，不等待后台 Promise", async () => {

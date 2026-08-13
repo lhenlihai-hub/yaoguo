@@ -9,6 +9,11 @@ const {
 } = require("../../runtime");
 const { estimateRequestTokens } = require("../../tokens/tokenEstimator");
 const { dedupeContextSections } = require("../../context/contextDeduper");
+const {
+  compileSystemPromptSections,
+  buildRuntimeContextSection,
+  getOutputStylePrompt
+} = require("../prompts");
 
 function normalizeConversationMessages(messages = []) {
   return (Array.isArray(messages) ? messages : [])
@@ -26,7 +31,7 @@ module.exports = {
     return /429|rate.?limit|too many requests|overload|engine_overloaded|try again later|timeout|temporarily unavailable|service unavailable|503|504|系统繁忙|服务繁忙|限流|稍后重试/.test(message);
   },
 
-  buildTaskContextMessage({ runContext, pinnedSections, budget }) {
+  buildTaskContextMessage({ runContext, pinnedSections, runtimeContext = "", budget }) {
     const candidates = [
       ...(pinnedSections || []).map((content, index) => ({ key: `pinned:${index}`, kind: "pinned", content, priority: 90, protected: true })),
       { key: "runContext", kind: "runContext", content: truncateForPromptTokens(runContext || "", budget.runContextTokens), priority: 75 }
@@ -37,19 +42,23 @@ module.exports = {
     for (const section of selected.filter((item) => item.kind === "pinned")) parts.push(section.content);
     const selectedRunContext = selectedByKey.get("runContext")?.content || "";
     if (selectedRunContext) parts.push("【运行上下文】", selectedRunContext);
+    if (`${runtimeContext || ""}`.trim()) parts.push("【运行环境】", `${runtimeContext}`.trim());
     return parts.join("\n").trim();
   },
 
-  buildTaskUserMessage({ taskType, title, instruction, input, context = "", budget }) {
+  buildTaskUserMessage({
+    taskType, title, instruction, input, context = "", budget,
+    instructionPlacement = "before-input"
+  }) {
+    const placeAfterInput = instructionPlacement === "after-input";
     return [
       ...(context ? ["【本轮上下文】", context, ""] : []),
       `【当前步骤】${title}（${taskType}）`,
       "",
-      "【步骤要求】",
-      instruction || "完成当前用户请求。",
-      "",
+      ...(!placeAfterInput ? ["【步骤要求】", instruction || "完成当前用户请求。", ""] : []),
       "【输入】",
-      truncateForPromptTokens(input || "无", budget.inputTokens)
+      truncateForPromptTokens(input || "无", budget.inputTokens),
+      ...(placeAfterInput ? ["", "【末尾操作指令】", instruction || "完成当前用户请求。"] : [])
     ].join("\n");
   },
 
@@ -119,14 +128,45 @@ module.exports = {
     const budget = mergeContextBudget(baseBudget, args.contextBudget);
     const tokenBudget = this.normalizeTokenBudget(budget);
     const sections = await this.loadTaskContextSections({ ...args, budget, tokenBudget });
-    const system = args.internalCall
-      ? await this.assembleInternalSystemPrompt(args.taskType)
-      : await this.assembleSystemPrompt(args.taskType, { cacheScope: args.memoryCacheScope });
+    const systemPromptSections = args.internalCall
+      ? [await this.assembleInternalSystemPrompt(args.taskType)]
+      : await this.assembleSystemPromptSections(args.taskType, {
+        cacheScope: args.memoryCacheScope,
+        memoryContext: args.memoryContext,
+        contextManagement: args.contextManagement,
+        tools: args.tools,
+        model: args.model,
+        workingDirectory: args.workingDirectory,
+        additionalWorkingDirectories: args.additionalWorkingDirectories,
+        mcpClients: args.mcpClients,
+        featureGates: args.featureGates,
+        outputStyleConfig: args.outputStyleConfig
+      });
+    const system = compileSystemPromptSections(systemPromptSections);
+    const outputStylePrompt = args.internalCall
+      ? ""
+      : await getOutputStylePrompt(this, args.outputStyleConfig);
     const modelContextTokens = this.getModelContextTokens(args.provider, args.model, args.settings);
     const outputReserveTokens = this.getOutputReserveTokens(args.provider, args.settings, args.callMaxTokens);
     const context = this.buildTaskContextMessage({
       runContext: sections.safeRunContext,
       pinnedSections: sections.safePinnedSections,
+      runtimeContext: args.internalCall ? "" : buildRuntimeContextSection({
+        tools: args.tools,
+        model: args.model,
+        currentDate: localDate(this.clock?.() || new Date()),
+        timeZone: localTimeZone(),
+        knowledgeCutoff: args.provider?.knowledgeCutoff || args.settings?.deepseek?.knowledgeCutoff,
+        languagePreference: args.settings?.language,
+        workingDirectory: args.workingDirectory,
+        scratchpadDirectory: args.scratchpadDirectory,
+        additionalWorkingDirectories: args.additionalWorkingDirectories,
+        mcpClients: args.mcpClients,
+        featureGates: args.featureGates,
+        environment: args.environment,
+        capabilityCatalog: args.capabilityCatalog,
+        outputStylePrompt
+      }),
       budget: tokenBudget
     });
     const user = this.buildTaskUserMessage({
@@ -135,7 +175,8 @@ module.exports = {
       instruction: sections.safeInstruction,
       input: sections.safeInput,
       context,
-      budget: tokenBudget
+      budget: tokenBudget,
+      instructionPlacement: args.instructionPlacement
     });
     const conversation = this.fitTaskConversationMessages({
       messages: this.buildTaskConversationMessages({
@@ -161,7 +202,8 @@ module.exports = {
     const promptTokens = estimateRequestTokens({ messages, tools: args.tools || [] });
     this.assertContextWindow(promptTokens, modelContextTokens, outputReserveTokens);
     return {
-      profile, budget, tokenBudget, sections, system, modelContextTokens, outputReserveTokens,
+      profile, budget, tokenBudget, sections, system, systemPromptSections,
+      modelContextTokens, outputReserveTokens,
       messages, promptTokens, effectiveBudget: tokenBudget
     };
   },
@@ -309,4 +351,22 @@ function mergeContextBudget(baseBudget = {}, override = {}) {
     }
   }
   return merged;
+}
+
+function localDate(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) throw new Error("运行环境 current date 无效");
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0")
+  ].join("-");
+}
+
+function localTimeZone() {
+  try {
+    return `${Intl.DateTimeFormat().resolvedOptions().timeZone || ""}`;
+  } catch {
+    return "";
+  }
 }

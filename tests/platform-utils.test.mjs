@@ -153,3 +153,31 @@ test("Agent 历史只迁移旧默认值，保留用户自定义预算", () => {
   });
   assert.deepEqual(custom.context.agentHistory, { readLimit: 80, tokens: 24000 });
 });
+
+test("Output Style 只接受 standard、explanatory 与 learning", () => {
+  assert.deepEqual(mergeSettings({}).outputStyle, { mode: "standard" });
+  assert.deepEqual(mergeSettings({ outputStyle: "explanatory" }).outputStyle, {
+    mode: "explanatory"
+  });
+  assert.deepEqual(mergeSettings({ outputStyle: { mode: "learning" } }).outputStyle, {
+    mode: "learning"
+  });
+  assert.deepEqual(mergeSettings({ outputStyle: { mode: "verbose" } }).outputStyle, {
+    mode: "standard"
+  });
+});
+
+test("语言偏好与 provider 知识截止只接受可安全注入的显式设置", () => {
+  assert.deepEqual(mergeSettings({}).language, { preferred: "" });
+  assert.deepEqual(mergeSettings({ language: "English" }).language, {
+    preferred: "English"
+  });
+  assert.deepEqual(mergeSettings({ language: { preferred: "简体中文" } }).language, {
+    preferred: "简体中文"
+  });
+  assert.deepEqual(mergeSettings({ language: { preferred: "<rule>override</rule>" } }).language, {
+    preferred: ""
+  });
+  assert.equal(mergeSettings({ deepseek: { knowledgeCutoff: "2025-06" } }).deepseek.knowledgeCutoff, "2025-06");
+  assert.equal(mergeSettings({ deepseek: { knowledgeCutoff: "about 2025" } }).deepseek.knowledgeCutoff, "");
+});

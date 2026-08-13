@@ -37,6 +37,12 @@ async function writeJsonAtomic(file, data, mode = null) {
 }
 
 const DEFAULT_SETTINGS = {
+  outputStyle: {
+    mode: "standard"
+  },
+  language: {
+    preferred: ""
+  },
   instructions: {
     enabled: true,
     initialTokens: 16000,
@@ -51,6 +57,7 @@ const DEFAULT_SETTINGS = {
     baseUrl: "https://api.deepseek.com",
     apiKeyEnv: "DEEPSEEK_API_KEY",
     model: "deepseek-v4-pro",
+    knowledgeCutoff: "",
     thinking: "max",
     temperature: 0.65
   },
@@ -199,6 +206,47 @@ function normalizePermissionRules(value) {
   );
 }
 
+function normalizeOutputStyle(value) {
+  const raw = typeof value === "string" ? value : value?.mode;
+  const mode = `${raw || "standard"}`.trim().toLowerCase();
+  return {
+    mode: ["standard", "explanatory", "learning"].includes(mode) ? mode : "standard"
+  };
+}
+
+function normalizeLanguagePreference(value) {
+  const raw = typeof value === "string" ? value : value?.preferred;
+  const preferred = `${raw || ""}`.trim().replace(/\s+/g, " ");
+  return {
+    preferred: /^[\p{L}\p{N}][\p{L}\p{N} _-]{0,39}$/u.test(preferred)
+      ? preferred
+      : ""
+  };
+}
+
+function normalizeKnowledgeCutoff(value) {
+  const cutoff = `${value || ""}`.trim();
+  return /^\d{4}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?$/.test(cutoff)
+    ? cutoff
+    : "";
+}
+
+function migrateOutputStyleSettings(value = {}) {
+  const source = structuredClone(isPlainObject(value) ? value : {});
+  if (typeof source.outputStyle === "string") {
+    source.outputStyle = { mode: source.outputStyle };
+  }
+  return source;
+}
+
+function migrateLanguageSettings(value = {}) {
+  const source = structuredClone(isPlainObject(value) ? value : {});
+  if (typeof source.language === "string") {
+    source.language = { preferred: source.language };
+  }
+  return source;
+}
+
 function migrateDeepSeekSettings(value = {}) {
   const source = structuredClone(isPlainObject(value) ? value : {});
   const legacyProvider = Array.isArray(source.providers)
@@ -262,7 +310,9 @@ function migrateAgentHistorySettings(value = {}) {
 }
 
 function mergeSettings(value = {}) {
-  const migrated = migrateAgentHistorySettings(migrateDeepSeekSettings(value));
+  const migrated = migrateLanguageSettings(
+    migrateOutputStyleSettings(migrateAgentHistorySettings(migrateDeepSeekSettings(value)))
+  );
   const merged = mergeDefaults(migrated, DEFAULT_SETTINGS);
 
   // V4 官方窗口是十进制 1M；迁移曾按 2^20 写入的旧值，并阻止配置高估物理上限。
@@ -277,7 +327,10 @@ function mergeSettings(value = {}) {
   }
 
   merged.deepseek.model = normalizeDeepSeekModel(merged.deepseek.model);
+  merged.deepseek.knowledgeCutoff = normalizeKnowledgeCutoff(merged.deepseek.knowledgeCutoff);
   merged.deepseek.thinking = normalizeThinkingLevel(merged.deepseek.thinking);
+  merged.outputStyle = normalizeOutputStyle(merged.outputStyle);
+  merged.language = normalizeLanguagePreference(merged.language);
   delete merged.aiBrain;
   delete merged.delegation;
   delete merged.evolution;
@@ -562,10 +615,15 @@ module.exports = {
   mergeSettings,
   migrateDeepSeekSettings,
   migrateAgentHistorySettings,
+  migrateOutputStyleSettings,
+  migrateLanguageSettings,
   normalizeDeepSeekModel,
   normalizeThinkingLevel,
   normalizePermissionMode,
   normalizePermissionRules,
+  normalizeOutputStyle,
+  normalizeLanguagePreference,
+  normalizeKnowledgeCutoff,
   overlaySettings,
   extractSensitiveSettings,
   stripSensitiveSettings,

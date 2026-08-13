@@ -132,6 +132,7 @@ class SessionMemoryService {
       }),
       contextProfile: "minimal",
       contextBudget: { runContextTokens: 0, inputTokens: 48000 },
+      instructionPlacement: "after-input",
       pinnedSections: [],
       internalCall: true,
       thinkingOverride: "disabled",

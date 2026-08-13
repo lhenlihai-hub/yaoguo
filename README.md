@@ -112,6 +112,14 @@ curl -fsSL https://raw.githubusercontent.com/lhenlihai-hub/yaoguo/main/install.s
 腰果
 ```
 
+腰果启动时会在后台限频检测稳定更新，不阻塞首屏；发现新版本后输入 `/update` 即可原地更新。也可以随时在终端执行：
+
+```bash
+腰果 update
+```
+
+无需卸载旧版本。更新会先下载到临时目录并校验，成功后再切换；失败时当前版本保持不变。
+
 首次进入后输入 `/model`，选择 Pro 或 Flash、设置真实的 Thinking off / High / Max 思考强度，并通过隐藏输入保存 DeepSeek API Key。也可以继续使用 `export DEEPSEEK_API_KEY="你的密钥"`；单次命令和 stdin 等非交互调用需要提前完成其中一种配置。
 
 `yaoguo` 是等价的英文命令。程序、运行数据与记忆统一放在 `~/.yaoguo`，只在 `~/.local/bin` 留下两个命令链接。安装前可先在浏览器中[审阅脚本](install.sh)；已知上游依赖例外见[生产依赖安全记录](docs/DEPENDENCY_SECURITY.md)。
