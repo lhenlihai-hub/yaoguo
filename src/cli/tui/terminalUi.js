@@ -1,6 +1,7 @@
 "use strict";
 
 const { ansi, createTuiTheme, formatHeader } = require("./theme");
+const { stripTerminalControlSequences } = require("../../platform/shared/text");
 
 const COMMANDS = Object.freeze([
   { name: "model", description: "模型、思考强度与 API Key" },
@@ -26,13 +27,13 @@ class YaoguoTerminalUi {
     this.terminal = options.terminal || new toolkit.ProcessTerminal();
     this.tui = new toolkit.TUI(this.terminal, true);
     this.tui.setClearOnShrink?.(false);
-    this.workspacePath = `${options.workspacePath || process.cwd()}`;
-    this.taskTitle = `${options.taskTitle || "当前会话"}`;
-    this.modelLabel = `${options.modelLabel || "Pro"}`;
-    this.thinkingLabel = `${options.thinkingLabel || "Max"}`;
-    this.permissionLabel = `${options.permissionLabel || "Ask"}`;
+    this.workspacePath = stripTerminalControlSequences(`${options.workspacePath || process.cwd()}`);
+    this.taskTitle = stripTerminalControlSequences(`${options.taskTitle || "当前会话"}`);
+    this.modelLabel = terminalText(options.modelLabel || "Pro");
+    this.thinkingLabel = terminalText(options.thinkingLabel || "Max");
+    this.permissionLabel = terminalText(options.permissionLabel || "Ask");
     this.keyAvailable = Boolean(options.keyAvailable);
-    this.version = `${options.version || "0.0.0"}`;
+    this.version = terminalText(options.version || "0.0.0");
     this.usageText = "";
     this.updateNotice = "";
     this.activity = "";
@@ -156,7 +157,7 @@ class YaoguoTerminalUi {
     const message = new Container();
     message.addChild(new Text(ansi.blueBright(ansi.bold("你")), 1, 0));
     message.addChild(new Markdown(
-      `${text || ""}`,
+      terminalText(text),
       1,
       0,
       this.theme.markdown,
@@ -220,7 +221,8 @@ class YaoguoTerminalUi {
     stream.streamed = true;
     stream.text += `${delta}`;
     this.renderAnswerDivider(stream);
-    stream.markdown.setText(stream.text);
+    // 对累计文本整体清洗：跨 chunk 拆分的转义序列也会被完整剥离。
+    stream.markdown.setText(stripTerminalControlSequences(stream.text));
     this.tui.requestRender();
   }
 
@@ -241,7 +243,7 @@ class YaoguoTerminalUi {
     if (!stream.thinkingStartedAt) stream.thinkingStartedAt = now;
     if (!stream.thinkingSegmentStartedAt) stream.thinkingSegmentStartedAt = now;
     stream.reasoningText += `${delta}`;
-    stream.reasoning.setText(stream.reasoningText);
+    stream.reasoning.setText(stripTerminalControlSequences(stream.reasoningText));
     this.renderReasoningTitle(stream);
     this.startStatusTimer();
     this.tui.requestRender();
@@ -256,7 +258,7 @@ class YaoguoTerminalUi {
     }
     stream.thinkingEndedAt = stream.reasoningText ? Date.now() : 0;
     const finalText = stream.text || `${fallback || ""}`;
-    stream.markdown.setText(finalText || "未生成可显示回复。");
+    stream.markdown.setText(stripTerminalControlSequences(finalText) || "未生成可显示回复。");
     this.renderReasoningTitle(stream);
     this.renderAnswerDivider(stream);
     this.tui.requestRender();
@@ -268,19 +270,19 @@ class YaoguoTerminalUi {
   }
 
   addNotice(text) {
-    const component = new this.kit.Text(ansi.muted(`◆ ${text || ""}`), 1, 0);
+    const component = new this.kit.Text(ansi.muted(`◆ ${stripTerminalControlSequences(text || "")}`), 1, 0);
     this.insertMessage(component);
     return component;
   }
 
   addSuccess(text) {
-    const component = new this.kit.Text(ansi.green(`✓ ${text || ""}`), 1, 0);
+    const component = new this.kit.Text(ansi.green(`✓ ${stripTerminalControlSequences(text || "")}`), 1, 0);
     this.insertMessage(component);
     return component;
   }
 
   addError(text) {
-    const component = new this.kit.Text(ansi.red(`! ${text || ""}`), 1, 0);
+    const component = new this.kit.Text(ansi.red(`! ${stripTerminalControlSequences(text || "")}`), 1, 0);
     this.insertMessage(component);
     return component;
   }
@@ -321,8 +323,8 @@ class YaoguoTerminalUi {
   }
 
   updateSession({ workspacePath, taskTitle } = {}) {
-    if (workspacePath) this.workspacePath = `${workspacePath}`;
-    if (taskTitle) this.taskTitle = `${taskTitle}`;
+    if (workspacePath) this.workspacePath = stripTerminalControlSequences(`${workspacePath}`);
+    if (taskTitle) this.taskTitle = stripTerminalControlSequences(`${taskTitle}`);
     this.sessionInfo.setText(formatSessionInfo(this.workspacePath, this.taskTitle));
     this.renderStatus();
     this.tui.requestRender(true);
@@ -335,7 +337,7 @@ class YaoguoTerminalUi {
     this.terminal.setProgress?.(this.busy);
     if (this.busy) {
       if (!wasBusy) this.taskStartedAt = Date.now();
-      this.activity = label;
+      this.activity = terminalText(label);
       this.startStatusTimer();
     } else {
       this.activity = "";
@@ -348,7 +350,7 @@ class YaoguoTerminalUi {
   }
 
   setActivity(label = "") {
-    this.activity = `${label || ""}`;
+    this.activity = terminalText(label);
     this.renderStatus();
   }
 
@@ -382,12 +384,12 @@ class YaoguoTerminalUi {
     const completed = stream.activityRows.map((row) => {
       const icon = row.status === "blocked" ? "!" : "✓";
       const color = row.status === "blocked" ? ansi.red : ansi.green;
-      const target = row.target ? `\n  ${ansi.muted(row.target)}` : "";
-      return `${color(icon)} ${row.label} · ${formatElapsed(row.durationMs)}${target}`;
+      const target = row.target ? `\n  ${ansi.muted(stripTerminalControlSequences(row.target))}` : "";
+      return `${color(icon)} ${stripTerminalControlSequences(row.label)} · ${formatElapsed(row.durationMs)}${target}`;
     });
     const running = [...stream.activities.values()].map((row) => {
-      const target = row.target ? `\n  ${ansi.muted(row.target)}` : "";
-      return `${ansi.blueBright("↳")} ${row.label}${target}`;
+      const target = row.target ? `\n  ${ansi.muted(stripTerminalControlSequences(row.target))}` : "";
+      return `${ansi.blueBright("↳")} ${stripTerminalControlSequences(row.label)}${target}`;
     });
     stream.workflow.setText([...completed, ...running].join("\n"));
   }
@@ -423,24 +425,24 @@ class YaoguoTerminalUi {
   }
 
   updateModel({ modelLabel, thinkingLabel, available } = {}) {
-    if (modelLabel) this.modelLabel = `${modelLabel}`;
-    if (thinkingLabel) this.thinkingLabel = `${thinkingLabel}`;
+    if (modelLabel) this.modelLabel = terminalText(modelLabel);
+    if (thinkingLabel) this.thinkingLabel = terminalText(thinkingLabel);
     if (available !== undefined) this.keyAvailable = Boolean(available);
     this.renderStatus();
   }
 
   updatePermissionMode(label = "Ask") {
-    this.permissionLabel = `${label || "Ask"}`;
+    this.permissionLabel = terminalText(label || "Ask");
     this.renderStatus();
   }
 
   setUsageText(text = "") {
-    this.usageText = `${text || ""}`;
+    this.usageText = terminalText(text);
     this.renderStatus();
   }
 
   setUpdateNotice(text = "") {
-    this.updateNotice = `${text || ""}`;
+    this.updateNotice = terminalText(text);
     this.renderStatus();
   }
 
@@ -474,11 +476,16 @@ class YaoguoTerminalUi {
   async choose({ title, description = "", items = [], selectedIndex = 0 } = {}) {
     if (!items.length) return null;
     return new Promise((resolve) => {
-      const list = new this.kit.SelectList(items, Math.min(8, items.length), this.theme.selectList);
+      const safeItems = items.map((item) => ({
+        ...item,
+        label: terminalText(item?.label),
+        description: terminalText(item?.description)
+      }));
+      const list = new this.kit.SelectList(safeItems, Math.min(8, safeItems.length), this.theme.selectList);
       list.setSelectedIndex(Math.max(0, selectedIndex));
       const box = new this.kit.Box(1, 1, (text) => ansi.panelBackground(text));
-      box.addChild(new this.kit.Text(ansi.blueBright(ansi.bold(title || "请选择")), 0, 0));
-      if (description) box.addChild(new this.kit.Text(ansi.muted(description), 0, 1));
+      box.addChild(new this.kit.Text(ansi.blueBright(ansi.bold(terminalText(title || "请选择"))), 0, 0));
+      if (description) box.addChild(new this.kit.Text(ansi.muted(terminalText(description)), 0, 1));
       box.addChild(list);
       const dialog = interactiveContainer(box, list);
       let settled = false;
@@ -510,8 +517,8 @@ class YaoguoTerminalUi {
     return new Promise((resolve) => {
       const secret = createSecretInput(this.kit, this.theme, (value) => finish(value), () => finish(null));
       const box = new this.kit.Box(1, 1, (text) => ansi.panelBackground(text));
-      box.addChild(new this.kit.Text(ansi.blueBright(ansi.bold(title || "API Key")), 0, 0));
-      if (description) box.addChild(new this.kit.Text(ansi.muted(description), 0, 1));
+      box.addChild(new this.kit.Text(ansi.blueBright(ansi.bold(terminalText(title || "API Key"))), 0, 0));
+      if (description) box.addChild(new this.kit.Text(ansi.muted(terminalText(description)), 0, 1));
       box.addChild(secret);
       const dialog = interactiveContainer(box, secret, true);
       let settled = false;
@@ -536,6 +543,10 @@ class YaoguoTerminalUi {
       this.tui.requestRender();
     });
   }
+}
+
+function terminalText(value = "") {
+  return stripTerminalControlSequences(`${value || ""}`);
 }
 
 function formatSessionInfo(workspacePath, taskTitle) {

@@ -73,6 +73,7 @@ class AgentToolRuntime {
     /** @type {any[] & { cleanup?: () => Promise<void>, grantPath?: (grant:any) => void }} */
     this.baseTools = [];
     this.advertisedNames = new Set();
+    this.ownsSharedTurns = options.ownsSharedTurns !== false;
     this.ownsResultStore = !this.toolCtx.contextResultStore;
     this.resultStore = this.toolCtx.contextResultStore || new ContextResultStore({
       // 工具原文只进入宿主控制的单一路径。不能因 workflow runDir 存在就
@@ -752,6 +753,10 @@ class AgentToolRuntime {
       args: safeToolEventArguments(event.toolName, args),
       code: blocked?.rejection?.code || ""
     });
+    // Pi 对被 block 的调用不回调 afterToolCall，这里作为唯一的统一清理点：
+    // 执行路径上 afterToolCall 已先消费过这些 Map，删除是幂等的。
+    this.blockedByCallId.delete(`${event.toolCallId || ""}`);
+    this.clearCallAuthorization(`${event.toolCallId || ""}`);
   }
 
   recordRejectedOrInvalidCall(event, raw, blocked) {
@@ -926,8 +931,12 @@ class AgentToolRuntime {
         await this.baseTools.cleanup();
       }
     } finally {
-      this.toolCtx.memoryPrefetchTurn?.close?.();
-      this.toolCtx.sessionMemoryTurn?.close?.();
+      // 子 Agent 与父共享同一 toolCtx：只有拥有 turn 生命周期的 runtime 才能
+      // 关闭 prefetch/sessionMemory turn，否则会打断仍在运行的父 Agent。
+      if (this.ownsSharedTurns) {
+        this.toolCtx.memoryPrefetchTurn?.close?.();
+        this.toolCtx.sessionMemoryTurn?.close?.();
+      }
       // 完整工具结果只为当前 Pi loop 的分页回读服务。产品 session 与
       // trace 都不依赖这份原文；turn 结束即清，避免留下第二份敏感数据。
       if (this.ownsResultStore && typeof this.resultStore?.cleanup === "function") {

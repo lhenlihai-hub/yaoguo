@@ -24,16 +24,19 @@ const DYNAMIC_SECTION_IDS = Object.freeze([
 const DYNAMIC_SECTION_DEFINITIONS = Object.freeze([
   Object.freeze({
     name: "memory-guidance",
+    assetId: "block://memory.guidance",
     cacheKey: (options = {}) => memoryGuidanceCacheKey(options.memoryContext),
     compute: (source, options = {}) => buildMemoryGuidanceSection(source, options.memoryContext)
   }),
   Object.freeze({
     name: "context-guidance",
+    assetId: "block://context.guidance",
     cacheKey: (options = {}) => contextGuidanceCacheKey(options.contextManagement),
     compute: (source, options = {}) => buildContextGuidanceSection(source, options.contextManagement)
   }),
   Object.freeze({
     name: "tool-guidance",
+    assetId: "block://tool.guidance",
     cacheKey: (options = {}) => normalizeToolNames(options.tools).join(","),
     compute: (source, options = {}) => buildToolGuidanceSection(source, options.tools)
   })
@@ -93,9 +96,18 @@ async function getSystemPrompt(source, options = {}) {
 
 async function memoizedSystemPromptSection(source, cacheScope, definition, options) {
   const dependencyKey = `${definition.cacheKey(options)}`;
-  const sectionKey = `dynamic:${definition.name}:${dependencyKey}`;
-  const cached = getSystemPromptSectionCache(source, cacheScope, sectionKey);
+  const active = Boolean(dependencyKey && dependencyKey !== "none");
+  const assetRevision = active && typeof source.systemPromptAssetRevision === "function"
+    ? await source.systemPromptAssetRevision(definition.assetId)
+    : "inactive";
+  const sectionKey = `dynamic:${definition.name}:${dependencyKey}:${assetRevision}`;
+  const cache = resolveSystemPromptSectionCache(source, cacheScope);
+  const cached = cache.get(sectionKey);
   if (cached !== undefined) return cached;
+  const prefix = `dynamic:${definition.name}:${dependencyKey}:`;
+  for (const key of cache.keys()) {
+    if (key.startsWith(prefix)) cache.delete(key);
+  }
   const pending = Promise.resolve(definition.compute(source, options));
   setSystemPromptSectionCache(source, cacheScope, sectionKey, pending);
   try {
@@ -103,14 +115,17 @@ async function memoizedSystemPromptSection(source, cacheScope, definition, optio
     setSystemPromptSectionCache(source, cacheScope, sectionKey, content);
     return content;
   } catch (error) {
-    const cache = resolveSystemPromptSectionCache(source, cacheScope);
     if (cache.get(sectionKey) === pending) cache.delete(sectionKey);
     throw error;
   }
 }
 
 function getSystemPromptSectionCache(source, cacheScope = "", sectionKey = "") {
-  return resolveSystemPromptSectionCache(source, cacheScope).get(`${sectionKey}`);
+  const cache = resolveSystemPromptSectionCache(source, cacheScope);
+  const exact = cache.get(`${sectionKey}`);
+  if (exact !== undefined || `${sectionKey}`.split(":").length >= 4) return exact;
+  const matches = [...cache.entries()].filter(([key]) => key.startsWith(`${sectionKey}:`));
+  return matches.length === 1 ? matches[0][1] : undefined;
 }
 
 /** @param {any} source @param {string} cacheScope @param {string} sectionKey @param {any} value */

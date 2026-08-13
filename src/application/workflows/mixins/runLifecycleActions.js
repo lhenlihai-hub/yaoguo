@@ -22,6 +22,7 @@ const {
   WORKFLOW_EXECUTION_INTERRUPTED_CODE,
   WORKFLOW_EXECUTION_INTERRUPTED_MESSAGE,
   ensureWorkflowStepExecutionIdentity,
+  advanceWorkflowStepExecutionIdentity,
   beginWorkflowStepExecution,
   finishWorkflowStepExecution
 } = require("../../agent/workflowStepExecution");
@@ -197,7 +198,15 @@ async runNextStep(runId) {
 
   ensureWorkflowStepExecutionIdentity(state, step);
   await markStepRunning(this, state, step);
-  const receipt = await beginWorkflowStepExecution(this, state, step);
+  let receipt = await beginWorkflowStepExecution(this, state, step);
+  if (receipt && receipt.state === "terminal"
+    && ["failed", "blocked"].includes(`${receipt.terminal?.status || ""}`)) {
+    // 终态明确的失败/阻塞允许重试：换新 attempt/turnId 开一条全新 receipt，
+    // 历史 receipt 保留审计。只有“started 无终态”的 interrupted 才拒绝自动重试。
+    advanceWorkflowStepExecutionIdentity(state, step);
+    await this.writeRun(state);
+    receipt = await beginWorkflowStepExecution(this, state, step);
+  }
   if (receipt && receipt.state !== "started") {
     return persistInterruptedStep(
       this,
@@ -209,7 +218,14 @@ async runNextStep(runId) {
     );
   }
 
+  // 取消竞态兜底：cancelRun 在 controller 注册之前落下的 pending-abort 标记
+  // 会让 beginRunAbortController 返回已 abort 的 controller；这里再短路一次
+  // 已落盘的 cancelled 状态，避免带着取消状态开始执行。
   const controller = this.beginRunAbortController(runId);
+  if (await this.getCancelledRunState(runId)) {
+    this.finishRunAbortController(runId, controller);
+    return this.getRun(runId);
+  }
   let persisted;
   let terminalStatus = "failed";
   let terminalStopCode = "";

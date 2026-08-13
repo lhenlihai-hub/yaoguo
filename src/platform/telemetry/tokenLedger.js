@@ -93,7 +93,12 @@ class TokenLedger {
 
   async recordCall(entry = {}) {
     await this.ensure();
-    await appendJsonl(this.aiCallsFile, entry);
+    // 原始副本同样脱敏错误文本：错误信息可能回显请求片段与凭据，
+    // 不能只在 ledger 副本做 normalize 后才清洗。
+    await appendJsonl(this.aiCallsFile, {
+      ...entry,
+      ...(entry.error ? { error: redactSensitive(entry.error) } : {})
+    });
     const normalized = this.normalize(entry);
     await appendJsonl(this.ledgerFile, normalized);
     try {

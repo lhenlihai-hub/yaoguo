@@ -24,6 +24,19 @@ function ensureWorkflowStepExecutionIdentity(state = {}, step = {}) {
   return { attempt, turnId };
 }
 
+// 对已确认终态（failed/blocked）的步骤重试时换新 attempt 与 turnId：
+// 历史 receipt 完整保留审计，新 receipt 从 started 开始，避免终端态被复用。
+function advanceWorkflowStepExecutionIdentity(state = {}, step = {}) {
+  const current = ensureWorkflowStepExecutionIdentity(state, step);
+  const attempt = current.attempt + 1;
+  const canonical = !step.taskType || step.taskType === "agent";
+  const turnId = canonical
+    ? `run:${state.id || "run"}:${attempt}`
+    : `workflow:${state.id || "run"}:${step.id || "step"}:${attempt}`;
+  step.agentExecution = { attempt, turnId };
+  return { attempt, turnId };
+}
+
 function workflowStepExecutionScope(state = {}, step = {}) {
   const identity = ensureWorkflowStepExecutionIdentity(state, step);
   return {
@@ -79,6 +92,7 @@ module.exports = {
   WORKFLOW_EXECUTION_INTERRUPTED_CODE,
   WORKFLOW_EXECUTION_INTERRUPTED_MESSAGE,
   ensureWorkflowStepExecutionIdentity,
+  advanceWorkflowStepExecutionIdentity,
   workflowStepExecutionScope,
   beginWorkflowStepExecution,
   finishWorkflowStepExecution

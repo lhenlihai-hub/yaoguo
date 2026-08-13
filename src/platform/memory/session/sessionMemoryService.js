@@ -5,6 +5,7 @@ const { KeyedSerialExecutor } = require("../../shared/keyedSerialExecutor");
 const { readJson, writeJsonAtomic, writeTextAtomic } = require("../../shared/fs");
 const { estimateTokens } = require("../../tokens/tokenEstimator");
 const { serializeContextValue } = require("../../context/agentContextLifecycle");
+const { createPromptContractLoader } = require("../promptContractLoader");
 
 const SESSION_MEMORY_PROMPT_BLOCK = "block://memory.session";
 const SESSION_MEMORY_HEADINGS = Object.freeze([
@@ -42,7 +43,11 @@ class SessionMemoryService {
     this.settingsService = settingsService;
     this.clock = clock;
     this.onError = onError;
-    this.contractPromise = null;
+    this.loadContract = createPromptContractLoader({
+      registryService: this.registryService,
+      blockId: SESSION_MEMORY_PROMPT_BLOCK,
+      reportError: (error) => this.reportError(error)
+    });
     this.queue = new KeyedSerialExecutor();
     this.jobs = new Set();
     this.accepting = true;
@@ -160,20 +165,6 @@ class SessionMemoryService {
     return { note, coveredIndex: snapshot.throughIndex, revision, updatedAt };
   }
 
-  async loadContract() {
-    if (!this.registryService?.getPromptBlock) return "";
-    if (!this.contractPromise) {
-      this.contractPromise = this.registryService
-        .getPromptBlock(SESSION_MEMORY_PROMPT_BLOCK, { required: true })
-        .then((row) => `${row?.asset?.content || ""}`.trim())
-        .catch((error) => {
-          this.contractPromise = null;
-          this.reportError(error);
-          return "";
-        });
-    }
-    return this.contractPromise;
-  }
 
   async drain() {
     while (this.jobs.size) await Promise.allSettled([...this.jobs]);

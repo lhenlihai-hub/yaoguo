@@ -23,6 +23,7 @@ const {
   systemCommandPath,
   systemRuntimeReadRoots
 } = require("../src/platform/ai/agentLoop/shellSandbox.js");
+const { HostProcessTracker } = require("../src/platform/ai/agentLoop/hostProcessTracker.js");
 const {
   captureWorkspaceIdentity
 } = require("../src/platform/projects/workspaceIdentity.js");
@@ -100,7 +101,7 @@ function scriptedRouter(scripts) {
       content: script.content || "",
       reasoningContent: "",
       toolCalls,
-      finishReason: toolCalls.length ? "tool_calls" : "stop",
+      finishReason: script.finishReason || (toolCalls.length ? "tool_calls" : "stop"),
       usage: script.usage || { promptTokens: 20, completionTokens: 5, totalTokens: 25 },
       requestMessages: continuation
         ? args.messages
@@ -127,6 +128,60 @@ function scriptedRouter(scripts) {
     async continueTaskDetailed(args) { return next(args, true); }
   };
 }
+
+test("连续空截断续写达到上限时保留已累积文本并正常结束", async () => {
+  const workDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-truncation-stall-"));
+  try {
+    const router = scriptedRouter([
+      { content: "第一部分内容", finishReason: "length" },
+      { content: "", finishReason: "length" },
+      { content: "", finishReason: "length" },
+      { content: "", finishReason: "length" }
+    ]);
+    const result = await runToolLoopRaw({
+      aiRouter: router,
+      registry: new AgentToolRegistry(),
+      toolNames: [],
+      toolCtx: { agentWorkDir: workDir, agentScopeAllow: [workDir] },
+      runTaskArgs: { taskType: "agent", input: "生成长文档" }
+    });
+
+    assert.equal(result.text, "第一部分内容", "stall 终止不得丢弃已累积的截断文本");
+    assert.equal(result.stopCode, "MODEL_OUTPUT_TRUNCATION_STALLED");
+    assert.equal(result.exhausted, false);
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
+test("未收敛候选集合不变时 artifact follow-up 按硬上限终止", async () => {
+  const workDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-artifact-stall-"));
+  try {
+    const candidates = new Map([["/work/report.md", {
+      absolute: "/work/report.md",
+      status: "candidate",
+      inspectionId: "inspection_111111111111111111111111"
+    }]]);
+    const router = scriptedRouter([{ content: "候选还未交付。" }]);
+    const result = await runToolLoopRaw({
+      aiRouter: router,
+      registry: new AgentToolRegistry(),
+      toolNames: [],
+      requireResolvedArtifacts: true,
+      toolCtx: {
+        agentWorkDir: workDir,
+        agentScopeAllow: [workDir],
+        artifactCandidates: candidates
+      },
+      runTaskArgs: { taskType: "agent", input: "生成交付" }
+    });
+
+    assert.equal(result.stopCode, "AGENT_ARTIFACTS_UNRESOLVED");
+    assert.ok(router.invocations.length <= 8, "候选集合不收敛时续轮必须有界");
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
 
 test("通用 Agent loop 通过基础 read 工具后继续完成交付", async () => {
   const workDir = await mkdtemp(path.join(tmpdir(), "yaoguo-agent-"));
@@ -918,6 +973,61 @@ test("产品 Agent 缺少权限服务时只允许安全读取，副作用工具�
   assert.equal(await runtime.authorize("read", { path: "a.md" }, { effect: "read" }), null);
   const rejected = await runtime.authorize("write", { path: "a.md" }, { effect: "workspace_write" });
   assert.equal(rejected.code, "TOOL_PERMISSION_UNAVAILABLE");
+});
+
+test("被 block 的工具调用在 tool_execution_end 后清理全部逐调用状态", () => {
+  const runtime = new AgentToolRuntime({
+    registry: new AgentToolRegistry(),
+    runTaskArgs: {},
+    toolCtx: {}
+  }, null);
+  const callId = "blocked-call-1";
+  runtime.blockedByCallId.set(callId, {
+    name: "write", args: {}, policy: {}, rejection: { code: "TOOL_POLICY_DENIED", error: "denied" }
+  });
+  runtime.normalizedArgsByCallId.set(callId, { path: "a.md" });
+  runtime.authorizedPoliciesByCallId.set(callId, { effect: "workspace_write" });
+
+  runtime.onAgentEvent({
+    type: "tool_execution_end", toolCallId: callId, toolName: "write", args: {}, isError: true
+  });
+
+  assert.equal(runtime.blockedByCallId.has(callId), false);
+  assert.equal(runtime.normalizedArgsByCallId.has(callId), false);
+  assert.equal(runtime.authorizedPoliciesByCallId.has(callId), false);
+});
+
+test("共享 toolCtx 的子 runtime 清理时不关闭父级 prefetch/session turn", async () => {
+  let prefetchClosed = 0;
+  let sessionClosed = 0;
+  const runtime = new AgentToolRuntime({
+    registry: new AgentToolRegistry(),
+    runTaskArgs: {},
+    ownsSharedTurns: false,
+    toolCtx: {
+      memoryPrefetchTurn: { close() { prefetchClosed += 1; } },
+      sessionMemoryTurn: { close() { sessionClosed += 1; } }
+    }
+  }, null);
+  await runtime.cleanup();
+  assert.equal(prefetchClosed, 0);
+  assert.equal(sessionClosed, 0);
+});
+
+test("拥有 turn 生命周期的 runtime 清理时关闭 toolCtx 上的 turn", async () => {
+  let prefetchClosed = 0;
+  let sessionClosed = 0;
+  const runtime = new AgentToolRuntime({
+    registry: new AgentToolRegistry(),
+    runTaskArgs: {},
+    toolCtx: {
+      memoryPrefetchTurn: { close() { prefetchClosed += 1; } },
+      sessionMemoryTurn: { close() { sessionClosed += 1; } }
+    }
+  }, null);
+  await runtime.cleanup();
+  assert.equal(prefetchClosed, 1);
+  assert.equal(sessionClosed, 1);
 });
 
 test("AgentToolRuntime 结束时删除自己创建的 turn 级工具原文", async () => {
@@ -1779,5 +1889,55 @@ test("bash 回收显式 detached + unref 的新 session 子进程", async () => 
     await tools?.cleanup();
     await sandbox?.cleanup();
     await rm(workDir, { recursive: true, force: true });
+  }
+});
+
+test("ps 监控连续失败时降级为进程组收割，不把监控故障上报为命令失败", async () => {
+  let calls = 0;
+  const killed = [];
+  const tracker = new HostProcessTracker({
+    rootPid: 99991,
+    rootPgid: 99991,
+    token: "token-1",
+    pollMs: 5,
+    snapshotProvider: async () => {
+      calls += 1;
+      if (calls === 1) {
+        return [{ pid: 99991, ppid: 1, pgid: 99991, birth: "supervisor-1", hasToken: true }];
+      }
+      throw new Error("ps 超时");
+    },
+    killProcess: (pid, signal) => killed.push({ pid, signal })
+  });
+  await tracker.start();
+  await tracker.loopPromise;
+  assert.equal(tracker.degraded, true, "连续失败必须降级而不是当作命令失败");
+  assert.ok(calls >= 4, "降级前按失败阈值重试");
+  await tracker.stopAndReap(); // 降级后收割不得抛错
+  assert.deepEqual(killed, [{ pid: 99991, signal: "SIGKILL" }], "已跟踪且身份未变的 detached 进程仍须回收");
+});
+
+test("监控器首帧失败时 ShellSandbox 降级为退出回执轮询，不误杀命令", async () => {
+  const sandbox = new ShellSandbox({
+    cwd: tmpdir(),
+    readRoots: [tmpdir()],
+    writeRoots: [tmpdir()],
+    processSnapshotProvider: async () => {
+      throw new Error("ps 不可用");
+    }
+  });
+  sandbox.runtime = {}; // waitForCommandStatus 不经过 wrap 路径
+  await sandbox.initializeProcessSupervisor();
+  try {
+    // 模拟已完成的命令：进程组回执 + 退出回执均已就绪。
+    const fakeGroup = 99992;
+    await writeFile(sandbox.processGroupFile, `${fakeGroup}\n`, "utf8");
+    await writeFile(sandbox.trackerReadyFile, "ready\n", "utf8");
+    await writeFile(sandbox.exitStatusFile, "0\n", "utf8");
+    const status = await sandbox.waitForCommandStatus(new AbortController().signal, "token-2");
+    assert.equal(status, 0, "监控不可用时仍按退出回执判定成功");
+    assert.equal(sandbox.activeTracker, null);
+  } finally {
+    await sandbox.cleanup().catch(() => {});
   }
 });

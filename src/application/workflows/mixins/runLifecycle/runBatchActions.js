@@ -73,8 +73,12 @@ async getCancelledRunState(runId) {
 beginRunAbortController(runId) {
   if (!(this.runAbortControllers instanceof Map)) this.runAbortControllers = new Map();
   const current = this.runAbortControllers.get(runId);
-  if (current && !current.signal.aborted) return current;
+  if (current && !current.pendingAbort && !current.signal.aborted) return current;
   const controller = new AbortController();
+  if (current?.pendingAbort) {
+    // cancelRun 落在执行窗口之前的竞态兜底：注册时直接带上取消原因。
+    controller.abort(new Error(`${current.reason || "用户停止任务"}`));
+  }
   this.runAbortControllers.set(runId, controller);
   return controller;
 }
@@ -87,7 +91,18 @@ finishRunAbortController(runId, controller) {
 
 abortRunExecution(runId, reason = "用户停止任务") {
   const controller = this.runAbortControllers?.get?.(runId);
-  if (!controller) return false;
+  if (!controller) {
+    // 尚无可 abort 的 controller（步骤还没走到注册点）：留下 pending 标记，
+    // 下一个 beginRunAbortController 会创建已 abort 的 controller，确保
+    // “用户点停止”之后不会完整执行新一轮并产生副作用。
+    if (!(this.runAbortControllers instanceof Map)) this.runAbortControllers = new Map();
+    this.runAbortControllers.set(runId, { pendingAbort: true, reason });
+    return false;
+  }
+  if (controller.pendingAbort) {
+    controller.reason = `${reason}`;
+    return false;
+  }
   try { controller.abort(new Error(reason)); } catch { controller.abort(); }
   this.runAbortControllers.delete(runId);
   return true;

@@ -137,7 +137,12 @@ async function executeSpawnSubagent(args = {}, ctx = {}) {
     registry,
     toolNames: allowedTools,
     baseToolNames: ["read"],
-    toolCtx: ctx,
+    // 子 Agent 的工具集不含 load_capability：清掉能力索引，避免注入
+    // 无法装载的 capability_index 纯 token 噪音。
+    toolCtx: { ...ctx, loadableCatalog: [] },
+    // 子 Agent 与父共享 toolCtx：其 cleanup 不得关闭父级的 prefetch /
+    // sessionMemory turn，父 Agent 仍在运行。
+    ownsSharedTurns: false,
     runTaskArgs: {
       taskType: ctx.subAgentTaskType || "agent",
       title: `subagent: ${purpose || prompt.slice(0, 40)}`,

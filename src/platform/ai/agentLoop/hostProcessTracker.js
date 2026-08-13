@@ -3,7 +3,8 @@
 const fs = require("node:fs");
 const { execFile } = require("node:child_process");
 
-const DEFAULT_POLL_MS = 15;
+const DEFAULT_POLL_MS = 250;
+const MAX_MONITOR_FAILURES = 3;
 const PROCESS_LIST_MAX_BYTES = 32 * 1024 * 1024;
 
 class HostProcessTracker {
@@ -13,6 +14,7 @@ class HostProcessTracker {
    *   rootPgid:number,
    *   token:string,
    *   snapshotProvider?:(token:string) => Promise<any[]>,
+   *   killProcess?:(pid:number, signal:NodeJS.Signals) => void,
    *   pollMs?:number
    * }} options
    */
@@ -21,15 +23,14 @@ class HostProcessTracker {
     this.rootPgid = options.rootPgid;
     this.token = options.token;
     this.snapshotProvider = options.snapshotProvider || readHostProcessSnapshot;
+    this.killProcess = options.killProcess || process.kill.bind(process);
     this.pollMs = Math.max(5, Number(options.pollMs) || DEFAULT_POLL_MS);
     this.tracked = new Map();
     this.lastSnapshot = [];
     this.stopped = false;
     this.failure = null;
+    this.degraded = false;
     this.loopPromise = null;
-    this.failurePromise = new Promise((resolve) => {
-      this.resolveFailure = resolve;
-    });
   }
 
   async start() {
@@ -39,15 +40,24 @@ class HostProcessTracker {
   }
 
   async monitorLoop() {
+    let consecutiveFailures = 0;
     while (!this.stopped) {
       await delay(this.pollMs);
       if (this.stopped) break;
       try {
         await this.capture();
+        consecutiveFailures = 0;
+        this.failure = null;
       } catch (error) {
+        // ps 偶发超时/繁忙是监控通道故障，不是被监控命令的故障。连续失败
+        // 达到阈值后降级为“进程组收割 + 已跟踪进程逐个复核身份”，绝不因此
+        // SIGKILL 一条健康的命令。
         this.failure = error;
-        this.resolveFailure(error);
-        break;
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= MAX_MONITOR_FAILURES) {
+          this.degraded = true;
+          break;
+        }
       }
     }
   }
@@ -82,22 +92,20 @@ class HostProcessTracker {
   async stopAndReap() {
     this.stopped = true;
     await this.loopPromise?.catch(() => {});
-    let captureError = this.failure;
+    let reapError = null;
     try {
       await this.capture();
-    } catch (error) {
-      captureError ||= error;
-    }
+    } catch {}
     for (const row of this.lastSnapshot) {
       if (row.pid <= 1 || row.pid === process.pid) continue;
       if (this.tracked.get(row.pid) !== row.birth) continue;
       try {
-        process.kill(row.pid, "SIGKILL");
+        this.killProcess(row.pid, "SIGKILL");
       } catch (error) {
-        if (error?.code !== "ESRCH") captureError ||= error;
+        if (error?.code !== "ESRCH") reapError ||= error;
       }
     }
-    if (captureError) throw captureError;
+    if (reapError) throw reapError;
   }
 }
 
@@ -130,7 +138,7 @@ function execFileText(file, args) {
     execFile(file, args, {
       encoding: "utf8",
       maxBuffer: PROCESS_LIST_MAX_BYTES,
-      timeout: 2000,
+      timeout: 5000,
       env: {
         PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
         LANG: "C",

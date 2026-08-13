@@ -4,8 +4,11 @@ const crypto = require("node:crypto");
 const {
   estimateCharTokenCost,
   estimateTokens,
-  estimateMessageTokens
+  estimateMessageTokens,
+  createTokenCounter
 } = require("../tokens/tokenEstimator");
+// 与 text.js 保持单一脱敏实现：日志、账本、Prompt 预览共用同一套模式。
+const { redactSensitive } = require("./text");
 
 function compactText(value = "") {
   return `${value || ""}`
@@ -44,13 +47,14 @@ function truncateForPromptTokens(text = "", maxTokens = 0) {
   const limit = Math.max(0, Number(maxTokens) || 0);
   if (!value || limit <= 0) return "";
   if (estimateTokens(value) <= limit) return value;
-  let used = 0;
+  // 与 estimateTokens 同口径的增量截断：截断结果的 estimateTokens 恒 ≤ limit，
+  // 不再出现按字符预算准入、按聚合公式验收时的 2 倍口径漂移。
+  const counter = createTokenCounter();
   let output = "";
   for (const char of Array.from(value)) {
-    const tokenCost = estimateCharTokenCost(char);
-    if (used + tokenCost > limit) break;
+    if (counter.peekChar(char) > limit) break;
+    counter.pushChar(char);
     output += char;
-    used += tokenCost;
   }
   return output.trimEnd();
 }
@@ -60,15 +64,15 @@ function tailForPromptTokens(text = "", maxTokens = 0) {
   const limit = Math.max(0, Number(maxTokens) || 0);
   if (!value || limit <= 0) return "";
   if (estimateTokens(value) <= limit) return value;
-  let used = 0;
+  // 词数/字符数等聚合项与顺序无关，倒序喂给计数器结果一致。
+  const counter = createTokenCounter();
   let output = "";
   const chars = Array.from(value);
   for (let index = chars.length - 1; index >= 0; index -= 1) {
     const char = chars[index];
-    const tokenCost = estimateCharTokenCost(char);
-    if (used + tokenCost > limit) break;
+    if (counter.peekChar(char) > limit) break;
+    counter.pushChar(char);
     output = char + output;
-    used += tokenCost;
   }
   return output.trimStart();
 }
@@ -78,13 +82,20 @@ function headTailForPromptTokens(text = "", maxTokens = 0, marker = "[中间内�
   const limit = Math.max(0, Number(maxTokens) || 0);
   if (!value || limit <= 0) return "";
   if (estimateTokens(value) <= limit) return value;
-  const headTokens = Math.max(1, Math.floor(limit * 0.45));
-  const tailTokens = Math.max(1, limit - headTokens - 24);
-  return [
+  const markerBlock = `\n\n${marker}\n\n`;
+  const markerTokens = estimateTokens(markerBlock);
+  if (markerTokens >= limit) return truncateForPromptTokens(value, limit);
+  const contentTokens = limit - markerTokens;
+  const headTokens = Math.max(1, Math.floor(contentTokens * 0.45));
+  const tailTokens = Math.max(0, contentTokens - headTokens);
+  const combined = [
     truncateForPromptTokens(value, headTokens),
-    `\n\n${marker}\n\n`,
+    markerBlock,
     tailForPromptTokens(value, tailTokens)
   ].join("").trim();
+  return estimateTokens(combined) <= limit
+    ? combined
+    : truncateForPromptTokens(combined, limit);
 }
 
 function shortHash(value = "") {
@@ -105,12 +116,6 @@ function sanitizePromptForContentFilter(text = "") {
     .replace(/冻死|死亡/g, "严重后果")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-}
-
-function redactSensitive(text = "") {
-  return `${text || ""}`
-    .replace(/sk-[a-z0-9_-]{12,}/gi, "sk-***")
-    .replace(/(api[_-]?key|token|authorization|password|密码|密钥)(["'\s:=：]+)([^\s"',，。；;]+)/gi, "$1$2***");
 }
 
 function markdownList(items, emptyText = "无") {
@@ -157,7 +162,7 @@ function parseJsonObjectFromText(text = "") {
 }
 
 // L7 防御性输入归一化：把 CRLF / 全角破折号 / 全角空白等折叠成 ASCII，
-// 让所有下游正则只针对一种规范形态。Postel's Law：parse 时尽量宽容。
+// 让所有下游正则只针对一种规范形态。Postel's Law：解析侧宽容接受多种输入形态。
 
 module.exports = {
   compactText,

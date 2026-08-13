@@ -156,3 +156,23 @@ test("TokenLedger 可按项目会话汇总 token 与缓存命中", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("原始 ai-calls 副本同样脱敏错误文本", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "yaoguo-ledger-redact-"));
+  const ledger = makeLedger(dir);
+  try {
+    await ledger.recordCall({
+      taskType: "agent",
+      title: "测试",
+      providerId: "deepseek",
+      providerName: "DeepSeek",
+      model: "deepseek-v4-pro",
+      error: "请求失败 401：Authorization: Bearer sk-abcdef1234567890 无效"
+    });
+    const raw = readFileSync(join(dir, "ai-calls.jsonl"), "utf8");
+    assert.equal(raw.includes("sk-abcdef1234567890"), false, "原始副本不得包含未脱敏密钥");
+    assert.equal(raw.includes("Bearer sk-"), false, "Bearer 凭据必须整体脱敏");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

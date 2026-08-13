@@ -103,6 +103,32 @@ test("任务历史保留原生 user/assistant 顺序，并排除当前输入", a
   ]);
 });
 
+test("单条超预算历史消息被压缩保留，不静默清空整段对话上下文", async () => {
+  const engine = Object.create(WorkflowEngine.prototype);
+  engine.settingsService = { get: async () => ({ context: { agentHistory: { tokens: 400 } } }) };
+  const oversized = `【本轮上下文】\n${"超长上下文内容 ".repeat(300)}`;
+  engine.listAgentMessageWindow = async () => ({
+    total: 2,
+    rows: [
+      { role: "user", turnId: "old", content: oversized },
+      { role: "user", turnId: "current", content: "当前输入" }
+    ]
+  });
+  engine.taskSessionStore = {
+    externalizeHistory: async () => ({ absolute: "/tmp/history.md", bytes: 1234 })
+  };
+
+  const picked = await engine.buildAgentConversationMessages({
+    projectId: "p1", taskId: "t1", currentTurnId: "current", currentMessage: "当前输入"
+  });
+
+  assert.ok(picked.length >= 1, "历史不得被静默清空");
+  assert.match(picked[0].content, /超长上下文内容|中间内容已进入压缩摘要/);
+  const notice = picked.find((row) => `${row.content}`.includes("历史未静默丢失"));
+  assert.ok(notice, "发生压缩时必须显式告知完整历史的外置位置");
+  assert.equal(notice.modelReady, true);
+});
+
 test("任务历史优先回放上一轮真实模型输入，保持跨轮缓存前缀", async () => {
   const engine = Object.create(WorkflowEngine.prototype);
   engine.settingsService = { get: async () => ({ context: { agentHistory: { tokens: 4000 } } }) };

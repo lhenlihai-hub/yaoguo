@@ -3,6 +3,8 @@
 const path = require("node:path");
 const fsp = require("node:fs/promises");
 const crypto = require("node:crypto");
+const { execFile } = require("node:child_process");
+const { promisify } = require("node:util");
 const { constants: fsConstants } = require("node:fs");
 const { isPathInside } = require("../../shared/pathSafety");
 const {
@@ -22,6 +24,8 @@ const {
 } = require("../../artifacts/publishedArtifactManifest");
 
 const SNAPSHOT_BUFFER_BYTES = 64 * 1024;
+const execFileAsync = promisify(execFile);
+const PUBLISH_COPY_WORKER = path.join(__dirname, "publishArtifactCopyWorker.js");
 
 const PUBLISH_ARTIFACT_TOOL_SCHEMA = {
   type: "function",
@@ -95,23 +99,24 @@ const publishArtifactTool = {
       title,
       removeSource: !deliveryPlan
     });
-    const absolute = deliveryPlan
-      ? await copyPublishedArtifact(managedAbsolute, deliveryPlan, path.basename(canonical))
-      : managedAbsolute;
+    const delivery = deliveryPlan
+      ? await copyPublishedArtifact(managedAbsolute, deliveryPlan, path.basename(canonical), sha256)
+      : null;
+    const absolute = delivery?.absolute || managedAbsolute;
     if (deliveryPlan) await removeInternalCandidate(canonical, await fsp.realpath(ctx.taskDir));
     if (inspection.snapshot) await fsp.unlink(inspection.snapshot).catch(() => {});
     markCandidatePublished(ctx, canonical, managedAbsolute, inspectionId);
-    const publishedStat = await fsp.stat(absolute);
+    const publishedStat = delivery ? null : await fsp.stat(absolute);
     return {
       absolute,
       managedAbsolute,
       file: path.basename(absolute),
       title,
-      bytes: publishedStat.size,
+      bytes: delivery?.bytes ?? publishedStat.size,
       sha256,
       inspectionId,
       inspectedAt: inspection.inspectedAt,
-      updatedAt: publishedStat.mtime.toISOString(),
+      updatedAt: delivery?.updatedAt || publishedStat.mtime.toISOString(),
       published: true
     };
   }
@@ -128,12 +133,12 @@ async function resolveExplicitDelivery(
     if (!raw || !path.isAbsolute(raw) || path.resolve(raw) === path.parse(path.resolve(raw)).root) continue;
     if (item?.kind === "file") {
       const parent = await fsp.realpath(path.dirname(path.resolve(raw))).catch(() => "");
-      if (parent) targets.push({ kind: "file", path: path.join(parent, path.basename(raw)) });
+      if (parent) targets.push(await createDeliveryPlan("file", path.join(parent, path.basename(raw))));
       continue;
     }
     const directory = await fsp.realpath(path.resolve(raw)).catch(() => "");
     const stat = directory ? await fsp.stat(directory).catch(() => null) : null;
-    if (stat?.isDirectory()) targets.push({ kind: "directory", path: directory });
+    if (stat?.isDirectory()) targets.push(await createDeliveryPlan("directory", directory));
   }
   if (!targets.length) {
     if (`${requestedDestination || ""}`.trim()) {
@@ -144,7 +149,7 @@ async function resolveExplicitDelivery(
       ? await fsp.realpath(path.resolve(requestedDefault)).catch(() => "")
       : "";
     const stat = directory ? await fsp.stat(directory).catch(() => null) : null;
-    if (stat?.isDirectory()) return { kind: "directory", path: directory };
+    if (stat?.isDirectory()) return createDeliveryPlan("directory", directory);
     return null;
   }
   const requested = `${requestedDestination || ""}`.trim();
@@ -160,10 +165,24 @@ async function resolveExplicitDelivery(
     if (resolved === target.path) return target;
     const parent = await fsp.realpath(path.dirname(resolved)).catch(() => "");
     if (parent && (parent === target.path || isPathInside(target.path, parent))) {
-      return { kind: "file", path: path.join(parent, path.basename(resolved)) };
+      return createDeliveryPlan("file", path.join(parent, path.basename(resolved)));
     }
   }
   throw new Error("destination 超出用户在本轮明确指定的输出位置。");
+}
+
+async function createDeliveryPlan(kind, target) {
+  const directory = kind === "directory" ? target : path.dirname(target);
+  const stat = await fsp.lstat(directory, { bigint: true });
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error("用户指定的输出目录必须是普通目录。");
+  }
+  return {
+    kind,
+    path: target,
+    directory,
+    directoryIdentity: fileIdentity(stat)
+  };
 }
 
 async function isInternalCandidate(absolute, taskDir = "") {
@@ -176,24 +195,77 @@ async function isInternalCandidate(absolute, taskDir = "") {
   return Boolean(candidateRoot && isPathInside(candidateRoot, absolute));
 }
 
-async function copyPublishedArtifact(source, plan, originalFileName = path.basename(source)) {
+async function copyPublishedArtifact(source, plan, originalFileName = path.basename(source), expectedSha256 = "") {
   const requested = plan.kind === "directory"
     ? path.join(plan.path, originalFileName)
     : plan.path;
-  const extension = path.extname(requested);
-  const base = path.basename(requested, extension);
-  const directory = path.dirname(requested);
-  for (let version = 1; ; version += 1) {
-    const fileName = version === 1 ? path.basename(requested) : `${base}-v${version}${extension}`;
-    const destination = path.join(directory, fileName);
-    try {
-      await fsp.copyFile(source, destination, fsConstants.COPYFILE_EXCL);
-      return await fsp.realpath(destination);
-    } catch (error) {
-      if (error?.code === "EEXIST") continue;
-      throw new Error(`无法把成品写入用户指定位置：${destination}`, { cause: error });
-    }
+  const payload = {
+    source,
+    requestedFileName: path.basename(requested),
+    expectedSha256,
+    approvedDirectory: plan.directory,
+    directoryIdentity: plan.directoryIdentity
+  };
+  let stdout = "";
+  try {
+    ({ stdout } = await execFileAsync(process.execPath, [PUBLISH_COPY_WORKER, JSON.stringify(payload)], {
+      cwd: plan.directory,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024,
+      windowsHide: true
+    }));
+  } catch (error) {
+    const detail = parseWorkerError(error?.stderr);
+    throw new Error(detail || `无法把成品写入用户指定位置：${requested}`, { cause: error });
   }
+  const result = parseWorkerResult(stdout);
+  const destination = path.join(plan.directory, result.file);
+  await assertDeliveredIdentity(plan, destination, result);
+  return {
+    absolute: destination,
+    bytes: result.bytes,
+    updatedAt: result.updatedAt
+  };
+}
+
+function parseWorkerResult(stdout = "") {
+  try {
+    const row = JSON.parse(`${stdout || ""}`.trim());
+    if (!row?.ok || !row.file || !row.identity || !Number.isSafeInteger(row.bytes)) throw new Error();
+    return row;
+  } catch {
+    throw new Error("成品交付复制进程返回了无效结果。");
+  }
+}
+
+function parseWorkerError(stderr = "") {
+  try {
+    return `${JSON.parse(`${stderr || ""}`.trim())?.message || ""}`.trim();
+  } catch {
+    return "";
+  }
+}
+
+async function assertDeliveredIdentity(plan, destination, result) {
+  const [directoryStat, destinationStat] = await Promise.all([
+    fsp.lstat(plan.directory, { bigint: true }),
+    fsp.lstat(destination, { bigint: true })
+  ]).catch(() => []);
+  if (
+    !directoryStat?.isDirectory()
+    || directoryStat.isSymbolicLink()
+    || !sameFileIdentity(fileIdentity(directoryStat), plan.directoryIdentity)
+    || !destinationStat?.isFile()
+    || destinationStat.isSymbolicLink()
+    || !sameFileIdentity(fileIdentity(destinationStat), result.identity)
+  ) {
+    throw new Error("用户指定的输出目录在交付期间发生变化，已拒绝返回不确定路径。");
+  }
+}
+
+function sameFileIdentity(left = {}, right = {}) {
+  return `${left?.dev || ""}` === `${right?.dev || ""}`
+    && `${left?.ino || ""}` === `${right?.ino || ""}`;
 }
 
 async function assertExplicitDeliveryAllowed(plan, rawDenyRoots = []) {
@@ -501,5 +573,6 @@ function markCandidatePublished(ctx, previousPath, absolute, inspectionId) {
 
 module.exports = {
   publishArtifactTool,
-  PUBLISH_ARTIFACT_TOOL_SCHEMA
+  PUBLISH_ARTIFACT_TOOL_SCHEMA,
+  copyPublishedArtifact
 };

@@ -494,3 +494,32 @@ test("readArtifactTool 缺定位字段错误返回", async () => {
   assert.equal(r.ok, false);
   await rm(paths.workspace, { recursive: true, force: true });
 });
+
+test("并发 upsert 同一项目索引不丢条目", async () => {
+  const paths = makeTempPaths();
+  const store = new ArtifactStore(paths);
+  const total = 24;
+  try {
+    await Promise.all(Array.from({ length: total }, (_, index) => (
+      store.upsertProjectIndex("proj1", {
+        id: `artifact-${index}`,
+        artifactType: "markdown",
+        title: `标题 ${index}`,
+        projectId: "proj1",
+        updatedAt: new Date(2026, 0, 1, 0, 0, index).toISOString()
+      })
+    )));
+
+    const index = JSON.parse(await readFile(
+      path.join(paths.projectsDir, "proj1", "artifacts", "index.json"),
+      "utf8"
+    ));
+    assert.equal(index.artifacts.length, total, "并发读-改-写不得互相覆盖");
+    assert.deepEqual(
+      index.artifacts.map((item) => item.id).sort(),
+      Array.from({ length: total }, (_, index) => `artifact-${index}`).sort()
+    );
+  } finally {
+    await rm(paths.workspace, { recursive: true, force: true });
+  }
+});

@@ -227,6 +227,150 @@ test("workflow 阻塞与失败终态复用统一 outcome 持久化，并与各�
   }
 });
 
+test("终态 failed/blocked 的步骤允许重试：新 attempt/turnId 开新 receipt，历史 receipt 保留", async (t) => {
+  for (const terminalStatus of ["failed", "blocked"]) {
+    await t.test(`retry after ${terminalStatus}`, async () => {
+      const root = await mkdtemp(join(tmpdir(), "yaoguo-workflow-retry-"));
+      const projectService = {
+        getTaskDir: (projectId, taskId) => join(root, "projects", projectId, "tasks", taskId)
+      };
+      const sessionStore = new TaskSessionStore({ projectService });
+      const harness = createHarness(root, sessionStore);
+      try {
+        await mkdir(join(harness.runDir, "outputs"), { recursive: true });
+        const state = harness.getState();
+        const step = state.steps[0];
+        ensureWorkflowStepExecutionIdentity(state, step);
+        const firstTurnId = step.agentExecution.turnId;
+        const started = await beginWorkflowStepExecution({ taskSessionStore: sessionStore }, state, step);
+        await sessionStore.finishTurnExecution({
+          projectId: "p1",
+          taskId: "t1",
+          turnId: firstTurnId,
+          runId: "r1",
+          executionId: started.started.executionId,
+          status: terminalStatus,
+          stopCode: "PREVIOUS_ATTEMPT"
+        });
+        step.status = "blocked";
+        state.status = "blocked";
+        harness.setState(state);
+        let executed = 0;
+        harness.engine.executeStep = async () => {
+          executed += 1;
+          return { text: "重试完成", files: [] };
+        };
+        harness.engine.appendAgentMessage = (entry) => sessionStore.appendMessage(entry);
+
+        const result = await harness.engine.runNextStep("r1");
+
+        assert.equal(executed, 1, "终态明确的失败/阻塞必须重新执行，而不是永久阻断");
+        const finalState = harness.getState();
+        const newTurnId = finalState.steps[0].agentExecution.turnId;
+        assert.notEqual(newTurnId, firstTurnId);
+        assert.equal(finalState.steps[0].agentExecution.attempt, 2);
+        assert.equal(finalState.status, "completed");
+
+        const first = await sessionStore.findTurnExecution({
+          projectId: "p1", taskId: "t1", turnId: firstTurnId
+        });
+        assert.equal(first.state, "terminal", "历史 receipt 保留审计");
+        assert.equal(first.terminal.status, terminalStatus);
+        const second = await sessionStore.findTurnExecution({
+          projectId: "p1", taskId: "t1", turnId: newTurnId
+        });
+        assert.equal(second.state, "terminal");
+        assert.equal(second.terminal.status, "completed");
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("终态 completed/cancelled 的步骤不自动重试，保持 replay 语义", async () => {
+  const root = await mkdtemp(join(tmpdir(), "yaoguo-workflow-no-retry-"));
+  const projectService = {
+    getTaskDir: (projectId, taskId) => join(root, "projects", projectId, "tasks", taskId)
+  };
+  const sessionStore = new TaskSessionStore({ projectService });
+  const harness = createHarness(root, sessionStore);
+  try {
+    await mkdir(join(harness.runDir, "outputs"), { recursive: true });
+    const state = harness.getState();
+    const step = state.steps[0];
+    ensureWorkflowStepExecutionIdentity(state, step);
+    const turnId = step.agentExecution.turnId;
+    const started = await beginWorkflowStepExecution({ taskSessionStore: sessionStore }, state, step);
+    await sessionStore.finishTurnExecution({
+      projectId: "p1",
+      taskId: "t1",
+      turnId,
+      runId: "r1",
+      executionId: started.started.executionId,
+      status: "completed",
+      stopCode: ""
+    });
+    step.status = "blocked";
+    state.status = "blocked";
+    harness.setState(state);
+    let executed = 0;
+    harness.engine.executeStep = async () => {
+      executed += 1;
+      return { text: "不应执行", files: [] };
+    };
+
+    const result = await harness.engine.runNextStep("r1");
+
+    assert.equal(executed, 0, "completed 终态不能自动重放副作用");
+    assert.equal(result.run.status, "interrupted");
+    assert.equal(result.run.steps[0].agentExecution.attempt, 1, "attempt 不因 completed 终态递增");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("取消落在 markStepRunning 与 controller 注册之间：不执行任何副作用", async () => {
+  const root = await mkdtemp(join(tmpdir(), "yaoguo-workflow-cancel-race-"));
+  const projectService = {
+    getTaskDir: (projectId, taskId) => join(root, "projects", projectId, "tasks", taskId)
+  };
+  const sessionStore = new TaskSessionStore({ projectService });
+  const harness = createHarness(root, sessionStore);
+  let executed = 0;
+  try {
+    await mkdir(join(harness.runDir, "outputs"), { recursive: true });
+    let markedRunning = false;
+    harness.engine.writeRun = async (state) => {
+      const next = clone(state);
+      if (!markedRunning && next.status === "running") {
+        markedRunning = true;
+        // 模拟 cancelRun 恰好在 markStepRunning 之后、controller 注册之前：
+        // 写 cancelled 状态并落下 pending-abort 标记。
+        next.status = "cancelled";
+        harness.engine.abortRunExecution("r1", "用户停止任务");
+      }
+      harness.setState(next);
+    };
+    harness.engine.executeStep = async () => {
+      executed += 1;
+      return { text: "不应执行", files: [] };
+    };
+
+    const result = await harness.engine.runNextStep("r1");
+
+    assert.equal(executed, 0, "取消窗口内不得再执行一轮 Agent 副作用");
+    assert.equal(result.run.status, "cancelled");
+    assert.equal(
+      harness.engine.runAbortControllers.get("r1"),
+      undefined,
+      "pending-abort 标记被 controller 消费并随 finally 收口"
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("崩溃遗留 started receipt 后，即使 run state 被复位 pending 也不会重放 Agent 副作用", async () => {
   const root = await mkdtemp(join(tmpdir(), "yaoguo-workflow-crash-"));
   const projectService = {

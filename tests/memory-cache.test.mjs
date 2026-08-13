@@ -50,7 +50,7 @@ test("三层缓存独立失效：memory 只清文件层，clear 与 compact 清�
   ]);
 });
 
-test("规则文件与用户上下文没有热重载，日期也只在全量失效后切换", async () => {
+test("规则文件与用户上下文在下一个 turn 热重载，日期每次装配取当前值", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "yaoguo-memory-cache-instructions-"));
   const workspace = path.join(root, "workspace");
   const managed = path.join(root, "managed");
@@ -82,15 +82,17 @@ test("规则文件与用户上下文没有热重载，日期也只在全量失�
     await writeFile(includeFile, "new-include", "utf8");
     now = new Date(2026, 7, 10, 0, 1, 0);
 
+    // 会话内编辑规则：下一个 turn 直接生效，不再依赖手动失效或重启。
     const cached = await service.beginTurn({ scopeRoot: workspace, cwd: workspace, cacheScope });
-    assert.match(cached.initialReminder(), /old-rule/);
-    assert.match(cached.initialReminder(), /old-include/);
-    assert.match(cached.initialReminder(), /current-date="2026-08-09"/);
+    assert.match(cached.initialReminder(), /new-rule/);
+    assert.match(cached.initialReminder(), /new-include/);
+    assert.doesNotMatch(cached.initialReminder(), /old-rule|old-include/);
+    assert.match(cached.initialReminder(), /current-date="2026-08-10"/);
 
     memoryCacheService.invalidate(cacheScope, "memory");
     const filesOnly = await service.beginTurn({ scopeRoot: workspace, cwd: workspace, cacheScope });
-    assert.match(filesOnly.initialReminder(), /old-rule/);
-    assert.match(filesOnly.initialReminder(), /current-date="2026-08-09"/);
+    assert.match(filesOnly.initialReminder(), /new-rule/);
+    assert.match(filesOnly.initialReminder(), /current-date="2026-08-10"/);
 
     memoryCacheService.invalidate(cacheScope, "clear");
     const refreshed = await service.beginTurn({ scopeRoot: workspace, cwd: workspace, cacheScope });

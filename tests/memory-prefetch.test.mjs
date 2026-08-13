@@ -166,6 +166,28 @@ test("Prefetch 真正异步启动，旁路未完成时主链可继续且不等�
   assert.match(turn.takeReadyContext(), /user-async\.md/);
 });
 
+test("Prefetch Prompt 加载失败会保守跳过并上报错误", async () => {
+  const { store } = await makeStore();
+  await store.append(memory("prompt-error"));
+  const errors = [];
+  const service = new MemoryPrefetchService({
+    aiRouter: { runTaskDetailed: async () => ({ content: '{"files":[]}' }) },
+    registryService: {
+      async getPromptBlock() {
+        const error = new Error("prompt unavailable");
+        error.code = "REQUIRED_PROMPT_UNAVAILABLE";
+        throw error;
+      }
+    },
+    onError: (error) => errors.push(error)
+  });
+  const turn = service.beginTurn({ memoryStore: store, conversation: [{ role: "user", content: "当前请求" }] });
+  await turn.settled();
+  assert.equal(turn.code, "PREFETCH_PROMPT_UNAVAILABLE");
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].code, "REQUIRED_PROMPT_UNAVAILABLE");
+});
+
 test("筛选输出超过 5 篇或包含候选外文件时保守返回空选择", () => {
   const candidates = Array.from({ length: 6 }, (_, index) => ({ file: `user-topic-${index}.md` }));
   assert.deepEqual(

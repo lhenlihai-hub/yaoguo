@@ -10,6 +10,7 @@ const { Writable } = require("node:stream");
 const { spawn } = require("node:child_process");
 const { createApplicationServices } = require("../application/appServices");
 const { isPathInside } = require("../platform/shared/pathSafety");
+const { stripTerminalControlSequences } = require("../platform/shared/text");
 const { summarizeNameFromMessage, isAutoTaskTitle } = require("../platform/runtime/contentSignals");
 const { DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS } = require("../platform/ai/deepseekV4Policy");
 const { runUninstall, archiveTaskPublishedArtifacts } = require("./uninstall");
@@ -819,7 +820,7 @@ function activityReporter(terminal) {
     const icon = activity.status === "completed"
       ? "✓"
       : (activity.status === "blocked" ? "!" : (activity.kind === "tool" ? "↳" : "◆"));
-    terminal.error.write(`${icon} ${label}\n`);
+    terminal.error.write(`${icon} ${stripTerminalControlSequences(label)}\n`);
   };
 }
 
@@ -1054,7 +1055,7 @@ async function runTurn(services, terminal, session, message) {
         if (!delta) return;
         streamed = true;
         if (terminal.ui) terminal.ui.appendAssistant(tuiStream, delta);
-        else terminal.output.write(delta);
+        else terminal.output.write(stripTerminalControlSequences(delta));
       },
       onReasoning: terminal.options.json ? null : (delta, event) => {
         if (!terminal.ui) return;
@@ -1084,9 +1085,13 @@ async function runTurn(services, terminal, session, message) {
     }, null, 2)}\n`);
   } else {
     if (streamed) terminal.output.write("\n");
-    if (!streamed || result.blocked || result.cancelled) terminal.output.write(`${result.reply || ""}\n`);
+    if (!streamed || result.blocked || result.cancelled) {
+      terminal.output.write(`${stripTerminalControlSequences(result.reply || "")}\n`);
+    }
     for (const artifact of result.artifacts || []) {
-      if (artifact?.absolute) terminal.error.write(`成品：${artifact.absolute}\n`);
+      if (artifact?.absolute) {
+        terminal.error.write(`成品：${stripTerminalControlSequences(artifact.absolute)}\n`);
+      }
     }
     if (!terminal.options.quiet && result.usage) {
       const cumulativeUsage = await sessionUsage(services, session).catch(() => null);
@@ -1167,13 +1172,13 @@ async function runInteractiveReadline(services, terminal, session, env = process
       continue;
     }
     if (message.startsWith("/")) {
-      terminal.error.write(`未知命令：${message}\n`);
+      terminal.error.write(`未知命令：${stripTerminalControlSequences(message)}\n`);
       continue;
     }
     try {
       await ensureModelAvailable(services.settingsService, env);
     } catch (error) {
-      terminal.error.write(`${error?.message || error}\n\n`);
+      terminal.error.write(`${stripTerminalControlSequences(error?.message || error)}\n\n`);
       continue;
     }
     terminal.error.write("腰果 > ");
@@ -1422,7 +1427,7 @@ if (require.main === module) {
   main().then(
     (code) => { process.exitCode = code; },
     (error) => {
-      process.stderr.write(`腰果启动失败：${error?.message || error}\n`);
+      process.stderr.write(`腰果启动失败：${stripTerminalControlSequences(error?.message || error)}\n`);
       process.exitCode = 1;
     }
   );

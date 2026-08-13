@@ -13,6 +13,7 @@ const { parseRssItems } = require(join(root, "src/platform/research/rssParser.js
 const { buildMemoryIndex, filterMemorySegments } = require(join(root, "src/platform/memory/memoryIndex.js"));
 const { SettingsService, mergeSettings } = require(join(root, "src/platform/config/settingsService.js"));
 const { isPathInside } = require(join(root, "src/platform/shared/pathSafety.js"));
+const { stripTerminalControlSequences } = require(join(root, "src/platform/shared/text.js"));
 const {
   primaryRequestText,
   extractTargetWordCount,
@@ -180,4 +181,69 @@ test("语言偏好与 provider 知识截止只接受可安全注入的显式设�
   });
   assert.equal(mergeSettings({ deepseek: { knowledgeCutoff: "2025-06" } }).deepseek.knowledgeCutoff, "2025-06");
   assert.equal(mergeSettings({ deepseek: { knowledgeCutoff: "about 2025" } }).deepseek.knowledgeCutoff, "");
+});
+
+test("终端输出清洗剥离转义序列与控制字符，保留可读换行与制表符", () => {
+  assert.equal(stripTerminalControlSequences(""), "");
+  assert.equal(
+    stripTerminalControlSequences("正常文本\ttab\n换行"),
+    "正常文本\ttab\n换行"
+  );
+  assert.equal(
+    stripTerminalControlSequences("前缀\x1b[31m红色\x1b[0m后缀"),
+    "前缀红色后缀"
+  );
+  // 终端标题篡改（OSC 0）与剪贴板写入（OSC 52）形态。
+  assert.equal(
+    stripTerminalControlSequences("安全\x1b]0;evil\x07正文"),
+    "安全正文"
+  );
+  assert.equal(
+    stripTerminalControlSequences("a\x1b]52;c;ZWNobw==\x07b"),
+    "ab"
+  );
+  // 独立 ESC 与 C0/C1 控制字符（含 DEL 与 C1 区）一律剥离。
+  assert.equal(stripTerminalControlSequences("a\x1bb\x00c\x7fd\x8fe"), "abcde");
+  // 跨 chunk 拆分的序列：ESC 与 C1 始终被剥离，最多留下无控制能力的可读残留。
+  assert.equal(
+    stripTerminalControlSequences(`${stripTerminalControlSequences("x\x1b[")}31m${stripTerminalControlSequences("y")}`),
+    "x[31my"
+  );
+});
+
+test("按 token 预算截断与 estimateTokens 口径一致，Unicode 文本不超预算", () => {
+  const { truncateForPromptTokens, tailForPromptTokens, headTailForPromptTokens } = require(join(root, "src/platform/shared/promptText.js"));
+  const { estimateTokens, createTokenCounter } = require(join(root, "src/platform/tokens/tokenEstimator.js"));
+  for (const budget of [50, 200, 800, 3200]) {
+    const text = "npm run check --workspace agent ".repeat(40);
+    const head = truncateForPromptTokens(text, budget);
+    assert.ok(head.length > 0);
+    assert.ok(estimateTokens(head) <= budget, `head 超出预算 ${budget}: ${estimateTokens(head)}`);
+    const tail = tailForPromptTokens(text, budget);
+    assert.ok(estimateTokens(tail) <= budget, `tail 超出预算 ${budget}: ${estimateTokens(tail)}`);
+  }
+  // 计数器与 estimateTokens 对同一文本给出一致结果。
+  const sample = "hello world 中文测试\nsecond line!";
+  const counter = createTokenCounter();
+  for (const char of Array.from(sample)) counter.pushChar(char);
+  assert.equal(counter.tokens(), estimateTokens(sample));
+  const unicodeSamples = [
+    "😀".repeat(1000),
+    "中文😀 café e\u0301 — release_2026 + test\n".repeat(80),
+    "𠮷野家 🚀 αβγ".repeat(120)
+  ];
+  for (const text of unicodeSamples) {
+    const exact = createTokenCounter();
+    for (const char of text) exact.pushChar(char);
+    assert.equal(exact.tokens(), estimateTokens(text), "增量计数器必须与完整估算严格一致");
+    for (const budget of [20, 50, 100, 300]) {
+      for (const clipped of [
+        truncateForPromptTokens(text, budget),
+        tailForPromptTokens(text, budget),
+        headTailForPromptTokens(text, budget)
+      ]) {
+        assert.ok(estimateTokens(clipped) <= budget, `Unicode 截断超出预算 ${budget}`);
+      }
+    }
+  }
 });

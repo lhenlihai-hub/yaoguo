@@ -276,22 +276,23 @@ class ShellSandbox {
     }
     this.activeProcessGroups.add(processGroup);
     if (this.shouldTrackHostDescendants()) {
-      this.activeTracker = await new HostProcessTracker({
-        rootPid: processGroup,
-        rootPgid: processGroup,
-        token: commandToken,
-        ...(this.processSnapshotProvider
-          ? { snapshotProvider: this.processSnapshotProvider }
-          : {})
-      }).start();
+      try {
+        this.activeTracker = await new HostProcessTracker({
+          rootPid: processGroup,
+          rootPgid: processGroup,
+          token: commandToken,
+          ...(this.processSnapshotProvider
+            ? { snapshotProvider: this.processSnapshotProvider }
+            : {})
+        }).start();
+      } catch (error) {
+        // 监控通道本身不可用不是命令故障：降级为“进程组收割 + 退出回执”，
+        // 不因 ps 失败误杀正在正常运行的命令。
+        this.activeTracker = null;
+      }
     }
     await fsp.writeFile(this.trackerReadyFile, "ready\n", { mode: 0o600 });
-    const status = this.activeTracker
-      ? await Promise.race([
-        readIntegerFileWhenReady(this.exitStatusFile, signal),
-        this.activeTracker.failurePromise.then((error) => { throw error; })
-      ])
-      : await readIntegerFileWhenReady(this.exitStatusFile, signal);
+    const status = await readIntegerFileWhenReady(this.exitStatusFile, signal);
     if (status < 0 || status > 255) throw new Error("系统命令退出状态无效。");
     return status;
   }

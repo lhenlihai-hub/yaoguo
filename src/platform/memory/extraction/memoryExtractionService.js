@@ -6,6 +6,7 @@ const { runToolLoop } = require("../../ai/agentLoop/agentLoop");
 const { normalizeConversation } = require("../prefetch/memoryPrefetchFormat");
 const { createMemoryExtractionToolRegistry } = require("./memoryExtractionTools");
 const { agentMemoryContext } = require("../memdir/agentMemoryProfile");
+const { createPromptContractLoader } = require("../promptContractLoader");
 
 const MEMORY_EXTRACTION_PROMPT_BLOCK = "block://memory.extract";
 const MEMORY_EXTRACTION_CURSOR_TYPE = "memory.extraction.cursor";
@@ -31,7 +32,11 @@ class MemoryExtractionService {
     this.autoDreamService = autoDreamService;
     this.clock = clock;
     this.onError = onError;
-    this.contractPromise = null;
+    this.loadContract = createPromptContractLoader({
+      registryService: this.registryService,
+      blockId: MEMORY_EXTRACTION_PROMPT_BLOCK,
+      reportError: (error) => this.reportError(error)
+    });
     this.queue = new KeyedSerialExecutor();
     this.jobs = new Map();
     this.accepting = true;
@@ -323,20 +328,6 @@ class MemoryExtractionService {
     }
   }
 
-  async loadContract() {
-    if (!this.registryService?.getPromptBlock) return "";
-    if (!this.contractPromise) {
-      this.contractPromise = this.registryService
-        .getPromptBlock(MEMORY_EXTRACTION_PROMPT_BLOCK, { required: true })
-        .then((row) => `${row?.asset?.content || ""}`.trim())
-        .catch((error) => {
-          this.contractPromise = null;
-          this.reportError(error);
-          return "";
-        });
-    }
-    return this.contractPromise;
-  }
 
   assertReady(job) {
     if (!job.projectId || !job.taskId || !job.turnId || !job.assistantEventId) {

@@ -427,12 +427,14 @@ class AiRouter {
     return compileSystemPromptSections(await this.assembleSystemPromptSections(taskType, options));
   }
 
-  // System prompt 资产加载（带 in-memory 缓存）。
+  // System prompt 资产加载（带 in-memory 缓存 + 文件身份校验）。
   // RegistryService 是唯一读取入口；必需资产失败时终止调用，不带空 Prompt 继续运行。
+  // 缓存按 mtimeMs 校验：磁盘资产更新后在下一轮装配自动生效，不再要求重启进程。
   async loadSystemPromptBlock(blockId = "", { required = false } = {}) {
     if (!blockId) return "";
     if (!this._systemPromptBlockCache) this._systemPromptBlockCache = new Map();
-    if (this._systemPromptBlockCache.has(blockId)) return this._systemPromptBlockCache.get(blockId);
+    const cached = this._systemPromptBlockCache.get(blockId);
+    if (cached && await this.promptAssetCacheFresh(cached)) return cached.content;
     if (!this.registryService) {
       if (required) {
         const error = new Error(`缺少 Prompt Registry，无法加载必需资产：${blockId}`);
@@ -443,14 +445,21 @@ class AiRouter {
     }
     const row = await this.registryService.getPromptBlock(blockId, { required });
     const content = typeof row?.asset?.content === "string" ? row.asset.content.trim() : "";
-    if (content) this._systemPromptBlockCache.set(blockId, content);
+    if (content) {
+      this._systemPromptBlockCache.set(blockId, {
+        content,
+        file: `${row.file || ""}`,
+        identity: await this.promptAssetFileIdentity(row.file)
+      });
+    }
     return content;
   }
 
   async loadSystemPromptAsset(blockId = "", { required = false } = {}) {
     if (!blockId) return null;
     if (!this._systemPromptAssetCache) this._systemPromptAssetCache = new Map();
-    if (this._systemPromptAssetCache.has(blockId)) return this._systemPromptAssetCache.get(blockId);
+    const cached = this._systemPromptAssetCache.get(blockId);
+    if (cached && await this.promptAssetCacheFresh(cached)) return cached.asset;
     if (!this.registryService) {
       if (required) {
         const error = new Error(`缺少 Prompt Registry，无法加载必需资产：${blockId}`);
@@ -462,8 +471,55 @@ class AiRouter {
     }
     const row = await this.registryService.getPromptBlock(blockId, { required });
     const asset = row?.asset && typeof row.asset === "object" ? row.asset : null;
-    if (asset) this._systemPromptAssetCache.set(blockId, asset);
+    if (asset) {
+      this._systemPromptAssetCache.set(blockId, {
+        asset,
+        file: `${row.file || ""}`,
+        identity: await this.promptAssetFileIdentity(row.file)
+      });
+    }
     return asset;
+  }
+
+  async promptAssetCacheFresh(cached) {
+    if (!cached?.file) return false;
+    const current = await this.promptAssetFileIdentity(cached.file);
+    return samePromptAssetIdentity(cached.identity, current);
+  }
+
+  async systemPromptAssetRevision(blockId = "") {
+    let file = `${this._systemPromptAssetCache?.get(blockId)?.file || ""}`;
+    if (!file && this.registryService?.getPromptBlock) {
+      const row = await this.registryService.getPromptBlock(blockId, { required: false });
+      file = `${row?.file || ""}`;
+    }
+    const identity = await this.promptAssetFileIdentity(file);
+    return file && identity
+      ? `${file}:${identity.mtimeMs}:${identity.ctimeMs}:${identity.size}:${identity.dev}:${identity.ino}`
+      : `${blockId}:missing`;
+  }
+
+  async promptAssetFileIdentity(file = "") {
+    if (!file) return null;
+    try {
+      const fsp = require("node:fs/promises");
+      const stat = await fsp.stat(file);
+      return {
+        mtimeMs: stat.mtimeMs,
+        ctimeMs: stat.ctimeMs,
+        size: stat.size,
+        dev: `${stat.dev}`,
+        ino: `${stat.ino}`
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  invalidatePromptCaches(cacheScope = "") {
+    this._systemPromptBlockCache?.clear();
+    this._systemPromptAssetCache?.clear();
+    this.systemPromptSectionCache(cacheScope).clear();
   }
 
   async loadSystemPromptSection(blockId = "", sectionId = "", { required = false, cacheScope = "" } = {}) {
@@ -500,6 +556,18 @@ Object.assign(
   aiRouterContextActions,
   aiRouterRequestActions
 );
+
+function samePromptAssetIdentity(left = null, right = null) {
+  return Boolean(
+    left
+    && right
+    && Number(left.mtimeMs) === Number(right.mtimeMs)
+    && Number(left.ctimeMs) === Number(right.ctimeMs)
+    && Number(left.size) === Number(right.size)
+    && `${left.dev || ""}` === `${right.dev || ""}`
+    && `${left.ino || ""}` === `${right.ino || ""}`
+  );
+}
 
 module.exports = {
   AiRouter

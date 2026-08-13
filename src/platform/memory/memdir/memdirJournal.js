@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { isPathInside } = require("../../shared/pathSafety");
 const { memdirError } = require("./memdirFormat");
 const { validateMemoryWrite } = require("./memdirPolicy");
@@ -14,6 +15,10 @@ const APPEND_ONLY_MARKER = ".append-only";
 const MAX_MEMORY_LOG_BYTES = 2 * 1024 * 1024;
 const MEMORY_LOG_FILE_PATTERN = /^\d{4}-\d{2}-\d{2}\.md$/;
 const MEMORY_LOG_MARKER_PATTERN = /^<!-- yaoguo:memory:([a-f0-9]{64}) -->$/;
+const MEMORY_LOG_LOCK_FILE = ".journal.lock";
+const MEMORY_LOG_LOCK_RETRY_MS = 15;
+const MEMORY_LOG_LOCK_TIMEOUT_MS = 5000;
+const MEMORY_LOG_INCOMPLETE_LOCK_STALE_MS = 15000;
 
 async function ensureMemoryLogDirectories(memoryDirectory = "") {
   const root = path.resolve(memoryDirectory);
@@ -57,35 +62,37 @@ async function hasAppendOnlyMarker(memoryDirectory = "") {
 async function appendMemoryLog(location, memory, now = new Date()) {
   const timestamp = safeDate(now);
   const { logDirectory } = await ensureMemoryLogDirectories(location.memoryDirectory);
-  const fileName = `${localDate(timestamp)}.md`;
-  const file = path.join(logDirectory, fileName);
-  const marker = `<!-- yaoguo:memory:${memory.entryDigest} -->`;
-  const existing = await readLogFile(file, logDirectory);
-  if (existing.includes(marker)) {
-    return logResult(memory, timestamp, fileName, true);
-  }
-  const record = {
-    version: 1,
-    recordedAt: timestamp.toISOString(),
-    type: memory.type,
-    basis: memory.basis,
-    topic: memory.topic,
-    file: memory.file,
-    name: memory.name,
-    description: memory.description,
-    content: memory.content,
-    valueBeyondCode: memory.rationale,
-    polarity: memory.polarity || null,
-    reference: memory.reference || null,
-    digest: memory.entryDigest
-  };
-  const header = existing ? "" : `# Memdir append log — ${localDate(timestamp)}\n\n`;
-  const entry = `${header}${marker}\n\`\`\`json\n${JSON.stringify(record)}\n\`\`\`\n\n`;
-  if (Buffer.byteLength(existing, "utf8") + Buffer.byteLength(entry, "utf8") > MAX_MEMORY_LOG_BYTES) {
-    throw memdirError("MEMDIR_LOG_BYTE_LIMIT", `单日日志不能超过 ${MAX_MEMORY_LOG_BYTES} bytes`);
-  }
-  await appendSafeFile(file, entry, logDirectory);
-  return logResult(memory, timestamp, fileName, false);
+  return withMemoryLogLock(logDirectory, async () => {
+    const fileName = `${localDate(timestamp)}.md`;
+    const file = path.join(logDirectory, fileName);
+    const marker = `<!-- yaoguo:memory:${memory.entryDigest} -->`;
+    const existing = await readLogFile(file, logDirectory);
+    if (existing.includes(marker)) {
+      return logResult(memory, timestamp, fileName, true);
+    }
+    const record = {
+      version: 1,
+      recordedAt: timestamp.toISOString(),
+      type: memory.type,
+      basis: memory.basis,
+      topic: memory.topic,
+      file: memory.file,
+      name: memory.name,
+      description: memory.description,
+      content: memory.content,
+      valueBeyondCode: memory.rationale,
+      polarity: memory.polarity || null,
+      reference: memory.reference || null,
+      digest: memory.entryDigest
+    };
+    const header = existing ? "" : `# Memdir append log — ${localDate(timestamp)}\n\n`;
+    const entry = `${header}${marker}\n\`\`\`json\n${JSON.stringify(record)}\n\`\`\`\n\n`;
+    if (Buffer.byteLength(existing, "utf8") + Buffer.byteLength(entry, "utf8") > MAX_MEMORY_LOG_BYTES) {
+      throw memdirError("MEMDIR_LOG_BYTE_LIMIT", `单日日志不能超过 ${MAX_MEMORY_LOG_BYTES} bytes`);
+    }
+    await appendSafeFile(file, entry, logDirectory);
+    return logResult(memory, timestamp, fileName, false);
+  });
 }
 
 async function listPendingMemoryLogs(location) {
@@ -131,24 +138,106 @@ function parseMemoryLog(content = "", file = "") {
 
 async function archivePendingMemoryLogs(location, logs = [], digest = "") {
   const { logDirectory, archiveDirectory } = await ensureMemoryLogDirectories(location.memoryDirectory);
-  const archived = [];
-  try {
-    for (const log of Array.isArray(logs) ? logs : []) {
-      const name = `${log?.name || ""}`;
-      if (!MEMORY_LOG_FILE_PATTERN.test(name)) continue;
-      const source = path.join(logDirectory, name);
-      const suffix = `${digest || ""}`.slice(0, 12) || "dreamed";
-      const target = path.join(archiveDirectory, name.replace(/\.md$/, `-${suffix}.md`));
-      const stat = await safeLogStat(source, logDirectory);
-      if (!stat) continue;
-      await fsp.rename(source, target);
-      archived.push({ source, target, file: `${MEMORY_LOG_DIRECTORY}/${name}` });
+  return withMemoryLogLock(logDirectory, async () => {
+    const archived = [];
+    try {
+      for (const log of Array.isArray(logs) ? logs : []) {
+        const name = `${log?.name || ""}`;
+        if (!MEMORY_LOG_FILE_PATTERN.test(name)) continue;
+        const source = path.join(logDirectory, name);
+        const suffix = `${digest || ""}`.slice(0, 12) || "dreamed";
+        const target = path.join(archiveDirectory, name.replace(/\.md$/, `-${suffix}.md`));
+        const stat = await safeLogStat(source, logDirectory);
+        if (!stat) continue;
+        const content = await readLogFile(source, logDirectory);
+        if (log.sha256 && sha256(content) !== log.sha256) {
+          throw memdirError(
+            "MEMDIR_RESHAPE_CONFLICT",
+            `归档窗口内 ${name} 出现新追加记录，本轮整合已放弃归档`
+          );
+        }
+        await fsp.rename(source, target);
+        archived.push({ source, target, file: `${MEMORY_LOG_DIRECTORY}/${name}` });
+      }
+    } catch (error) {
+      await restoreArchivedMemoryLogs(archived);
+      throw error;
     }
-  } catch (error) {
-    await restoreArchivedMemoryLogs(archived);
-    throw error;
+    return archived;
+  });
+}
+
+async function withMemoryLogLock(logDirectory, action) {
+  const lockFile = path.join(logDirectory, MEMORY_LOG_LOCK_FILE);
+  const startedAt = Date.now();
+  let handle = null;
+  while (!handle) {
+    try {
+      handle = await fsp.open(
+        lockFile,
+        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0),
+        0o600
+      );
+      await handle.writeFile(JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() }));
+      await handle.sync();
+    } catch (error) {
+      await handle?.close().catch(() => {});
+      handle = null;
+      if (error?.code !== "EEXIST") throw error;
+      if (await removeAbandonedMemoryLogLock(lockFile)) continue;
+      if (Date.now() - startedAt >= MEMORY_LOG_LOCK_TIMEOUT_MS) {
+        throw memdirError("MEMDIR_LOG_LOCK_TIMEOUT", "记忆日志正在被另一进程修改，请稍后重试");
+      }
+      await new Promise((resolve) => setTimeout(resolve, MEMORY_LOG_LOCK_RETRY_MS));
+    }
   }
-  return archived;
+  const identity = fileIdentity(await handle.stat({ bigint: true }));
+  try {
+    return await action();
+  } finally {
+    await handle.close().catch(() => {});
+    await unlinkIfIdentity(lockFile, identity).catch(() => false);
+  }
+}
+
+async function removeAbandonedMemoryLogLock(lockFile) {
+  const stat = await fsp.lstat(lockFile, { bigint: true }).catch(() => null);
+  if (!stat?.isFile() || stat.isSymbolicLink()) return false;
+  let owner = null;
+  try { owner = JSON.parse(await fsp.readFile(lockFile, "utf8")); } catch {}
+  const pid = Number(owner?.pid);
+  if (!Number.isSafeInteger(pid) || pid <= 1) {
+    const ageMs = Date.now() - Number(stat.mtimeMs || 0);
+    if (ageMs < MEMORY_LOG_INCOMPLETE_LOCK_STALE_MS) return false;
+  } else if (processIsAlive(pid)) {
+    return false;
+  }
+  return unlinkIfIdentity(lockFile, fileIdentity(stat));
+}
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+async function unlinkIfIdentity(file, expected) {
+  const stat = await fsp.lstat(file, { bigint: true }).catch(() => null);
+  if (!stat?.isFile() || stat.isSymbolicLink() || !sameIdentity(fileIdentity(stat), expected)) return false;
+  await fsp.unlink(file);
+  return true;
+}
+
+function fileIdentity(stat) {
+  return { dev: `${stat?.dev || ""}`, ino: `${stat?.ino || ""}` };
+}
+
+function sameIdentity(left = {}, right = {}) {
+  return `${left?.dev || ""}` === `${right?.dev || ""}`
+    && `${left?.ino || ""}` === `${right?.ino || ""}`;
 }
 
 async function restoreArchivedMemoryLogs(rows = []) {
@@ -290,3 +379,7 @@ module.exports = {
   hasAppendOnlyMarker,
   localDate
 };
+
+function sha256(value = "") {
+  return crypto.createHash("sha256").update(`${value || ""}`, "utf8").digest("hex");
+}

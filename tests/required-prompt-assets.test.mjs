@@ -53,7 +53,7 @@ function sectionedSystemAsset(content = "<identity>腰果</identity>") {
   });
 }
 
-test("必需 Prompt 缺失或损坏时 fail-closed", async () => {
+test("必需 Prompt 缺失或目标损坏时 fail-closed，无关损坏资产被隔离", async () => {
   const fixture = await promptFixture();
   try {
     await assert.rejects(
@@ -67,11 +67,8 @@ test("必需 Prompt 缺失或损坏时 fail-closed", async () => {
       sectionedSystemAsset(),
       "utf8"
     );
-    await assert.rejects(
-      fixture.registry.getPromptBlock("block://system.agent", { required: true }),
-      (error) => error?.code === "REQUIRED_PROMPT_UNAVAILABLE"
-        && /无法解析/.test(error.message)
-    );
+    const row = await fixture.registry.getPromptBlock("block://system.agent", { required: true });
+    assert.equal(row.id, "block://system.agent", "无关损坏资产不得污染目标 block 加载");
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -222,7 +219,7 @@ test("启用非 standard Output Style 时缺少 Plugin 资产会 fail-closed", a
   }
 });
 
-test("启用文件工具时缺少动态工具指导资产会 fail-closed", async () => {
+test("启用文件工具时缺少动态工具指导资产 fail-closed", async () => {
   const fixture = await promptFixture();
   try {
     await Promise.all([
@@ -251,13 +248,14 @@ test("启用文件工具时缺少动态工具指导资产会 fail-closed", async
     await assert.rejects(
       router.assembleSystemPrompt("agent", { tools: ["read"] }),
       (error) => error?.code === "REQUIRED_PROMPT_UNAVAILABLE"
+        && error?.blockId === "block://tool.guidance"
     );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
 
-test("绑定 Memdir 时缺少动态记忆指导资产会 fail-closed", async () => {
+test("绑定 Memdir 时缺少动态记忆指导资产 fail-closed", async () => {
   const fixture = await promptFixture();
   try {
     await Promise.all([
@@ -295,7 +293,7 @@ test("绑定 Memdir 时缺少动态记忆指导资产会 fail-closed", async () 
   }
 });
 
-test("启用上下文生命周期能力时缺少动态指导资产会 fail-closed", async () => {
+test("启用上下文生命周期能力时缺少动态指导资产 fail-closed", async () => {
   const fixture = await promptFixture();
   try {
     await Promise.all([
@@ -328,6 +326,122 @@ test("启用上下文生命周期能力时缺少动态指导资产会 fail-close
       (error) => error?.code === "REQUIRED_PROMPT_UNAVAILABLE"
         && error?.blockId === "block://context.guidance"
     );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("单个损坏的非目标资产文件不会炸掉其他 block 的加载", async () => {
+  const fixture = await promptFixture();
+  try {
+    await writeFile(
+      path.join(fixture.blocksDir, "system.json"),
+      sectionedSystemAsset("<identity>腰果</identity>"),
+      "utf8"
+    );
+    await writeFile(
+      path.join(fixture.blocksDir, "broken.json"),
+      "{ 不是合法 JSON",
+      "utf8"
+    );
+
+    const row = await fixture.registry.getPromptBlock("block://system.agent", { required: true });
+
+    assert.equal(row.id, "block://system.agent");
+    assert.match(row.asset.content, /腰果/);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("目标资产本身损坏时按 required 语义报出解析失败", async () => {
+  const fixture = await promptFixture();
+  try {
+    await writeFile(
+      path.join(fixture.blocksDir, "system.json"),
+      "{ 损坏的目标资产",
+      "utf8"
+    );
+
+    await assert.rejects(
+      () => fixture.registry.getPromptBlock("block://system.agent", { required: true }),
+      (error) => error?.code === "REQUIRED_PROMPT_UNAVAILABLE"
+        && /无法解析/.test(error.message)
+    );
+    assert.equal(
+      await fixture.registry.getPromptBlock("block://system.agent"),
+      null,
+      "required:false 时损坏资产按缺失返回 null"
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("AiRouter 资产缓存在磁盘文件修改后自动失效", async () => {
+  const fixture = await promptFixture();
+  const router = new AiRouter(
+    { get: async () => ({ deepseek: {} }) },
+    { registriesDir: fixture.registriesDir },
+    { registryService: fixture.registry }
+  );
+  try {
+    const file = path.join(fixture.blocksDir, "system.agent.json");
+    await writeFile(file, promptAsset("block://system.agent", "<identity>v1</identity>"), "utf8");
+    assert.equal(await router.loadSystemPromptBlock("block://system.agent"), "<identity>v1</identity>");
+
+    await writeFile(file, promptAsset("block://system.agent", "<identity>v2</identity>"), "utf8");
+    const now = new Date();
+    await (await import("node:fs/promises")).utimes(file, now, new Date(now.getTime() + 2000));
+    assert.equal(
+      await router.loadSystemPromptBlock("block://system.agent"),
+      "<identity>v2</identity>",
+      "mtime 变化后必须重新加载，不要求重启进程"
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("完整 System Prompt 装配会在同一 cacheScope 热重载动态指导资产", async () => {
+  const fixture = await promptFixture();
+  const writeToolGuidance = (content) => writeFile(
+    path.join(fixture.blocksDir, "tool.guidance.json"),
+    JSON.stringify({
+      id: "block://tool.guidance",
+      kind: "prompt-block",
+      version: 1,
+      title: "tool.guidance",
+      content: "动态工具指导。",
+      sections: { "file-read": content }
+    }),
+    "utf8"
+  );
+  try {
+    await Promise.all([
+      writeFile(path.join(fixture.blocksDir, "system.agent.json"), sectionedSystemAsset(), "utf8"),
+      writeFile(path.join(fixture.blocksDir, "soul.json"), promptAsset("block://soul.zh", "<soul>人格</soul>"), "utf8"),
+      writeFile(path.join(fixture.blocksDir, "aesthetic.json"), promptAsset("block://aesthetic.baseline.zh", "<aesthetic>审美</aesthetic>"), "utf8"),
+      writeToolGuidance("<file_read>工具规则 v1</file_read>")
+    ]);
+    const router = new AiRouter(
+      { get: async () => ({ deepseek: {} }) },
+      { registriesDir: fixture.registriesDir },
+      { registryService: fixture.registry }
+    );
+    const options = { tools: ["read"], cacheScope: "task:p1:t1" };
+    assert.match(await router.assembleSystemPrompt("agent", options), /工具规则 v1/);
+
+    await writeToolGuidance("<file_read>工具规则 v2 已更新</file_read>");
+    const now = new Date();
+    await (await import("node:fs/promises")).utimes(
+      path.join(fixture.blocksDir, "tool.guidance.json"),
+      now,
+      new Date(now.getTime() + 2000)
+    );
+    const refreshed = await router.assembleSystemPrompt("agent", options);
+    assert.match(refreshed, /工具规则 v2 已更新/);
+    assert.doesNotMatch(refreshed, /工具规则 v1\b/);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }

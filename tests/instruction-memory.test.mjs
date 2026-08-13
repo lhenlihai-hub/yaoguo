@@ -352,3 +352,49 @@ function scriptedRouter(scripts) {
     async continueTaskDetailed(args) { return response(args, true); }
   };
 }
+
+test("会话内编辑规则文件在下一个 turn 生效，新建规则文件不再被负缓存吞掉", async () => {
+  const f = await fixture();
+  const { MemoryCacheService } = require("../src/platform/memory/cache");
+  f.service.memoryCacheService = new MemoryCacheService();
+  const cacheScope = "task:p1:t1";
+  try {
+    const cwd = f.workspace;
+    await put(path.join(cwd, "YAOGUO.md"), "规则 v1");
+    const first = await f.service.beginTurn({ scopeRoot: f.workspace, cwd, cacheScope });
+    assert.match(first.initialReminder(), /规则 v1/);
+
+    // 编辑已有规则：必须在下个 turn 生效。
+    await writeFile(path.join(cwd, "YAOGUO.md"), "规则 v2 已更新", "utf8");
+    const second = await f.service.beginTurn({ scopeRoot: f.workspace, cwd, cacheScope });
+    assert.match(second.initialReminder(), /规则 v2 已更新/);
+    assert.doesNotMatch(second.initialReminder(), /规则 v1\b/);
+
+    // 新建规则文件：曾在发现过的目录里新建，不能被负缓存或 discoveredOwners 吞掉。
+    await put(path.join(cwd, "YAOGUO.local.md"), "新增本地规则");
+    const third = await f.service.beginTurn({ scopeRoot: f.workspace, cwd, cacheScope });
+    assert.match(third.initialReminder(), /新增本地规则/);
+  } finally {
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test("只修改被 include 的规则文件也会在下一个 turn 生效", async () => {
+  const f = await fixture();
+  const { MemoryCacheService } = require("../src/platform/memory/cache");
+  f.service.memoryCacheService = new MemoryCacheService();
+  try {
+    const included = path.join(f.workspace, "shared-rule.md");
+    await put(path.join(f.workspace, "YAOGUO.md"), "根规则\n@include shared-rule.md");
+    await put(included, "子规则 v1");
+    const first = await f.service.beginTurn({ scopeRoot: f.workspace, cwd: f.workspace, cacheScope: "task:p1:include" });
+    assert.match(first.initialReminder(), /子规则 v1/);
+
+    await writeFile(included, "子规则 v2 已更新", "utf8");
+    const second = await f.service.beginTurn({ scopeRoot: f.workspace, cwd: f.workspace, cacheScope: "task:p1:include" });
+    assert.match(second.initialReminder(), /子规则 v2 已更新/);
+    assert.doesNotMatch(second.initialReminder(), /子规则 v1\b/);
+  } finally {
+    await rm(f.root, { recursive: true, force: true });
+  }
+});

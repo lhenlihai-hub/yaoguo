@@ -11,6 +11,7 @@ const {
 } = require("./autoDreamState");
 const { createAutoDreamToolRegistry } = require("./autoDreamTools");
 const { agentMemoryContext } = require("../memdir/agentMemoryProfile");
+const { createPromptContractLoader } = require("../promptContractLoader");
 
 const AUTO_DREAM_PROMPT_BLOCK = "block://memory.autodream";
 const MAX_AUTO_DREAM_ROUNDS = 12;
@@ -37,7 +38,11 @@ class AutoDreamService {
     this.pid = pid;
     this.stateStoreFactory = stateStoreFactory;
     this.onError = onError;
-    this.contractPromise = null;
+    this.loadContract = createPromptContractLoader({
+      registryService: this.registryService,
+      blockId: AUTO_DREAM_PROMPT_BLOCK,
+      reportError: (error) => this.reportError(error)
+    });
     this.queue = new KeyedSerialExecutor();
     this.jobs = new Map();
     this.accepting = true;
@@ -318,20 +323,6 @@ class AutoDreamService {
     return new AutoDreamStateStore({ memoryDirectory, clock: this.clock, pid: this.pid, minSessions });
   }
 
-  async loadContract() {
-    if (!this.registryService?.getPromptBlock) return "";
-    if (!this.contractPromise) {
-      this.contractPromise = this.registryService
-        .getPromptBlock(AUTO_DREAM_PROMPT_BLOCK, { required: true })
-        .then((row) => `${row?.asset?.content || ""}`.trim())
-        .catch((error) => {
-          this.contractPromise = null;
-          this.reportError(error);
-          return "";
-        });
-    }
-    return this.contractPromise;
-  }
 
   async recordAudit(job, result = {}) {
     if (!this.taskSessionStore?.appendEvent || !job.projectId || !job.taskId) return null;

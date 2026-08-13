@@ -29,11 +29,6 @@ class InstructionFileLoader {
     const absolute = path.resolve(file);
     const root = path.resolve(allowedRoot || path.dirname(absolute));
     const cacheKey = `file:${absolute}:${allowPat ? "pat" : "body"}`;
-    if (this.cache.has(cacheKey)) {
-      const cached = this.cache.get(cacheKey);
-      replayDiagnostics(diagnostics, cached?.diagnostics, source);
-      return cached?.value || null;
-    }
     let stat;
     try {
       stat = await fsp.lstat(absolute);
@@ -42,26 +37,38 @@ class InstructionFileLoader {
         ? []
         : [diag("INSTRUCTION_FILE_UNREADABLE", source, error.message)];
       diagnostics.push(...rows);
-      this.cache.set(cacheKey, { value: null, diagnostics: rows });
+      // ENOENT 不写负缓存：规则文件随时可能被新建，负缓存会让新规则在
+      // 整个会话内不可见。其余读取失败缓存身份，文件恢复后自动重验。
+      if (error?.code !== "ENOENT") {
+        this.cache.set(cacheKey, { value: null, diagnostics: rows, identity: { mtimeMs: -1, size: -1 } });
+      }
       return null;
+    }
+    const identity = fileIdentity(stat);
+    if (this.cache.has(cacheKey)) {
+      const cached = this.cache.get(cacheKey);
+      if (sameIdentity(cached?.identity, identity)) {
+        replayDiagnostics(diagnostics, cached?.diagnostics, source);
+        return cached?.value || null;
+      }
     }
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
       const rows = [diag("INSTRUCTION_FILE_UNSAFE", source, "只接受 nlink=1 的普通文件")];
       diagnostics.push(...rows);
-      this.cache.set(cacheKey, { value: null, diagnostics: rows });
+      this.cache.set(cacheKey, { value: null, diagnostics: rows, identity });
       return null;
     }
     if (stat.size > this.maxFileBytes) {
       const rows = [diag("INSTRUCTION_FILE_TOO_LARGE", source, `文件超过 ${this.maxFileBytes} bytes`)];
       diagnostics.push(...rows);
-      this.cache.set(cacheKey, { value: null, diagnostics: rows });
+      this.cache.set(cacheKey, { value: null, diagnostics: rows, identity });
       return null;
     }
     const real = await fsp.realpath(absolute).catch(() => "");
     if (!real || !samePath(real, absolute) || !isPathInside(root, real)) {
       const rows = [diag("INSTRUCTION_FILE_OUT_OF_SCOPE", source, "路径或符号链接超出规则根")];
       diagnostics.push(...rows);
-      this.cache.set(cacheKey, { value: null, diagnostics: rows });
+      this.cache.set(cacheKey, { value: null, diagnostics: rows, identity });
       return null;
     }
     const raw = await fsp.readFile(real, "utf8");
@@ -73,17 +80,11 @@ class InstructionFileLoader {
       patternError: parsed.patternError,
       digest: sha256(raw)
     };
-    this.cache.set(cacheKey, { value, diagnostics: [] });
+    this.cache.set(cacheKey, { value, diagnostics: [], identity });
     return value;
   }
 
   async expand(candidate = {}, diagnostics = []) {
-    const cacheKey = `expanded:${path.resolve(candidate.absolute || "")}:${path.resolve(candidate.allowedRoot || ".")}`;
-    if (this.cache.has(cacheKey)) {
-      const cached = this.cache.get(cacheKey);
-      replayDiagnostics(diagnostics, cached?.diagnostics, candidate.source);
-      return cached?.value || { content: "", digest: sha256("") };
-    }
     const state = { files: 0, bytes: 0, stopped: false };
     const expansionDiagnostics = [];
     const content = await this.expandFile(candidate.absolute, {
@@ -96,7 +97,6 @@ class InstructionFileLoader {
     });
     const value = { content, digest: sha256(content) };
     diagnostics.push(...expansionDiagnostics);
-    this.cache.set(cacheKey, { value, diagnostics: expansionDiagnostics });
     return value;
   }
 
@@ -180,6 +180,28 @@ function samePath(left = "", right = "") {
   const a = path.resolve(left);
   const b = path.resolve(right);
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function sameIdentity(cached = null, current = null) {
+  return Boolean(
+    cached
+    && current
+    && Number(cached.mtimeMs) === Number(current.mtimeMs)
+    && Number(cached.ctimeMs) === Number(current.ctimeMs)
+    && Number(cached.size) === Number(current.size)
+    && `${cached.dev || ""}` === `${current.dev || ""}`
+    && `${cached.ino || ""}` === `${current.ino || ""}`
+  );
+}
+
+function fileIdentity(stat) {
+  return {
+    mtimeMs: stat.mtimeMs,
+    ctimeMs: stat.ctimeMs,
+    size: stat.size,
+    dev: `${stat.dev}`,
+    ino: `${stat.ino}`
+  };
 }
 
 module.exports = {

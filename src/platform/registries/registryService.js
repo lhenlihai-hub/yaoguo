@@ -61,12 +61,16 @@ class RegistryService {
       return null;
     }
     const files = await this.listFiles("prompts/blocks");
+    const parseFailures = [];
     for (const file of files) {
       let asset;
       try {
         asset = await this.loadFile(file);
       } catch (error) {
-        throw requiredPromptError(blockId, `Prompt 资产无法解析：${path.relative(this.root, file)}`, error);
+        // 单个损坏的资产文件不能炸掉全部 block 查找：跳过并在最后统一报告，
+        // 目标 block 本身损坏时仍按 required 语义抛出。
+        parseFailures.push(path.relative(this.root, file));
+        continue;
       }
       if (asset?.id !== blockId) continue;
       const content = typeof asset.content === "string" ? asset.content.trim() : "";
@@ -83,7 +87,12 @@ class RegistryService {
         asset
       };
     }
-    if (required) throw requiredPromptError(blockId, `缺少必需 Prompt 资产：${blockId}`);
+    if (required) {
+      if (parseFailures.length) {
+        throw requiredPromptError(blockId, `Prompt 资产无法解析：${parseFailures.join("、")}`);
+      }
+      throw requiredPromptError(blockId, `缺少必需 Prompt 资产：${blockId}`);
+    }
     return null;
   }
 

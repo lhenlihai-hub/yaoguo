@@ -71,6 +71,13 @@ class InstructionMemoryTurn {
 
   async resume(cached = {}, explicitTargets = []) {
     this.restoreUserContext(cached);
+    // 缓存只保留候选清单。评估结果与文档正文全部重建：磁盘上的规则修改、
+    // 新建或删除必须在下一个 turn 生效，不能依赖陈旧文档或负缓存。
+    this.documents = new Map();
+    this.documentCache = new Map();
+    this.evaluated = new Set();
+    this.totalTokens = 0;
+    this.discoveredOwners = new Set();
     const targets = [];
     for (const target of explicitTargets) {
       const resolved = await this.resolveTarget(target);
@@ -78,6 +85,7 @@ class InstructionMemoryTurn {
       targets.push(resolved.target);
       await this.discoverChain(resolved.owner);
     }
+    await this.discoverChain(this.cwd);
     await this.activate({ targets, all: false, initial: true });
     this.initialIds = new Set(this.documents.keys());
     this.deliveredVersion = this.activationVersion;
@@ -280,7 +288,8 @@ class InstructionMemoryTurn {
 
   restoreUserContext(cached = {}) {
     const state = cached?.state || {};
-    this.currentDate = `${state.currentDate || cached?.value?.currentDate || this.currentDate || ""}`;
+    // currentDate 由宿主每次 beginTurn 提供新值，不从跨 turn 缓存恢复，
+    // 避免跨天会话继续使用陈旧日期。
     this.candidates = restoreMap(state.candidates);
     this.documents = restoreMap(state.documents);
     this.documentCache = restoreMap(state.documentCache);

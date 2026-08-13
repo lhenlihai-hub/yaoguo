@@ -1,6 +1,7 @@
 // @ts-check
 
 const { parseJsonObjectFromText } = require("../../runtime");
+const { createPromptContractLoader } = require("../promptContractLoader");
 const {
   MAX_PREFETCH_FILES,
   normalizePrefetchSelection,
@@ -17,7 +18,11 @@ class MemoryPrefetchService {
     this.registryService = registryService;
     this.clock = clock;
     this.onError = onError;
-    this.contractPromise = null;
+    this.loadContract = createPromptContractLoader({
+      registryService: this.registryService,
+      blockId: PREFETCH_PROMPT_BLOCK,
+      reportError: (error) => this.reportError(error)
+    });
   }
 
   beginTurn(options = {}) {
@@ -93,20 +98,6 @@ class MemoryPrefetchService {
     return { content: '{"files":[]}' };
   }
 
-  async loadContract() {
-    if (!this.registryService?.getPromptBlock) return "";
-    if (!this.contractPromise) {
-      this.contractPromise = this.registryService
-        .getPromptBlock(PREFETCH_PROMPT_BLOCK, { required: true })
-        .then((row) => `${row?.asset?.content || ""}`.trim())
-        .catch((error) => {
-          this.contractPromise = null;
-          this.reportError(error);
-          return "";
-        });
-    }
-    return this.contractPromise;
-  }
 
   reportError(error) {
     if (typeof this.onError !== "function") return;

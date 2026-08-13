@@ -36,6 +36,18 @@ function redactSensitive(text = "") {
     .replace(/(api[_-]?key|token|authorization|password|密码|密钥)(["'\s:=：]+)([^\s"',，。；;]+)/gi, "$1$2***");
 }
 
+// 终端输出安全：剥离 ANSI/CSI/OSC 转义序列，以及除 \t\n\r 外的全部 C0/C1
+// 控制字符。模型输出、磁盘文件名与错误文本在进入终端前都必须经过这里，
+// 防止终端标题篡改、清屏或 OSC 52 剪贴板写入等终端控制注入。
+const ANSI_ESCAPE_SEQUENCE_PATTERN = /[\u001B\u009B][[\]()#;?]*(?:(?:(?:(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*|[a-zA-Z\d]+(?:;[-a-zA-Z\d/#&.:=?%@~_]*)*)?\u0007)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g;
+const CONTROL_CHARACTER_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
+
+function stripTerminalControlSequences(value = "") {
+  return `${value || ""}`
+    .replace(ANSI_ESCAPE_SEQUENCE_PATTERN, "")
+    .replace(CONTROL_CHARACTER_PATTERN, "");
+}
+
 module.exports = {
   estimateTokens,
   estimateMessageTokens,
@@ -44,5 +56,6 @@ module.exports = {
   sha1,
   stableJson,
   hashObject,
-  redactSensitive
+  redactSensitive,
+  stripTerminalControlSequences
 };

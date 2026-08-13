@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const { stripTerminalControlSequences } = require("../platform/shared/text");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
@@ -457,7 +458,7 @@ async function runUpdateCommand(argv = [], options = {}) {
       ...options,
       argv: [],
       onStatus(label) {
-        if (label !== "正在检查更新…") output.write(`${label}\n`);
+        if (label !== "正在检查更新…") output.write(`${stripTerminalControlSequences(label)}\n`);
       }
     });
     if (!result.updated) {
@@ -467,7 +468,7 @@ async function runUpdateCommand(argv = [], options = {}) {
     }
     return 0;
   } catch (error) {
-    errorOutput.write(`更新失败，当前版本未改变：${error?.message || error}\n`);
+    errorOutput.write(`更新失败，当前版本未改变：${stripTerminalControlSequences(error?.message || error)}\n`);
     return 1;
   }
 }

@@ -353,3 +353,124 @@ test("第五个会话满足双门控后才运行模型驱动四阶段，前四�
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
+
+test("归档前复查日志内容：窗口内新追加会放弃归档而不是永久吞掉新记忆", async () => {
+  const { archivePendingMemoryLogs, listPendingMemoryLogs } = require("../src/platform/memory/memdir/memdirJournal.js");
+  const crypto = require("node:crypto");
+  const sha256 = (value) => crypto.createHash("sha256").update(value, "utf8").digest("hex");
+  const root = await mkdtemp(path.join(tmpdir(), "yaoguo-autodream-archive-race-"));
+  try {
+    const memoryDirectory = path.join(root, "memory");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(path.join(memoryDirectory, "logs"), { recursive: true });
+    const location = { memoryDirectory };
+    const logFile = path.join(memoryDirectory, "logs", "2026-08-13.md");
+    await writeFile(logFile, "# 记忆日志\n\n记录 A\n", "utf8");
+    const snapshotLogs = [{ name: "2026-08-13.md", sha256: sha256("# 记忆日志\n\n记录 A\n") }];
+
+    // 快照之后、归档之前出现新追加。
+    await writeFile(logFile, "# 记忆日志\n\n记录 A\n记录 B\n", "utf8");
+
+    await assert.rejects(
+      () => archivePendingMemoryLogs(location, snapshotLogs, "digest-1"),
+      (error) => error?.code === "MEMDIR_RESHAPE_CONFLICT"
+    );
+    const { readdir } = await import("node:fs/promises");
+    assert.deepEqual(
+      (await readdir(path.join(memoryDirectory, "logs"))).filter((name) => name !== "processed"),
+      ["2026-08-13.md"]
+    );
+    assert.deepEqual(
+      await readdir(path.join(memoryDirectory, "logs", "processed")),
+      [],
+      "冲突时日志必须留在 pending，不能进入 processed"
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("append 与 archive 跨进程锁覆盖 hash 到 rename 窗口，新记忆留在 active log", async () => {
+  const fsp = require("node:fs/promises");
+  const {
+    appendMemoryLog,
+    archivePendingMemoryLogs,
+    listPendingMemoryLogs
+  } = require("../src/platform/memory/memdir/memdirJournal.js");
+  const { validateMemoryWrite } = require("../src/platform/memory/memdir/memdirPolicy.js");
+  const root = await mkdtemp(path.join(tmpdir(), "yaoguo-autodream-locked-archive-"));
+  const location = { memoryDirectory: path.join(root, "memory") };
+  const memory = (topic) => validateMemoryWrite({
+    type: "project",
+    basis: TYPE_BASIS.project,
+    topic,
+    name: `项目 ${topic}`,
+    description: `项目 ${topic} 的长期事实。`,
+    content: `内容 ${topic}`,
+    valueBeyondCode: `理由 ${topic}`
+  });
+  const originalRename = fsp.rename;
+  let appendPromise = null;
+  try {
+    await appendMemoryLog(location, memory("A"), new Date("2026-08-13T10:00:00.000Z"));
+    const snapshot = await listPendingMemoryLogs(location);
+    const crypto = require("node:crypto");
+    snapshot.forEach((row) => {
+      row.sha256 = crypto.createHash("sha256").update(row.content, "utf8").digest("hex");
+    });
+    fsp.rename = async (...args) => {
+      if (!appendPromise && `${args[0]}`.endsWith("2026-08-13.md")) {
+        appendPromise = appendMemoryLog(location, memory("B"), new Date("2026-08-13T10:01:00.000Z"));
+      }
+      return originalRename(...args);
+    };
+
+    await archivePendingMemoryLogs(location, snapshot, "digest-locked");
+    await appendPromise;
+    const pending = await listPendingMemoryLogs(location);
+    assert.equal(pending.length, 1);
+    assert.match(pending[0].content, /内容 B/);
+    assert.doesNotMatch(pending[0].content, /内容 A/);
+    const processed = await readFile(
+      path.join(location.memoryDirectory, "logs", "processed", "2026-08-13-digest-locke.md"),
+      "utf8"
+    );
+    assert.match(processed, /内容 A/);
+    assert.doesNotMatch(processed, /内容 B/);
+  } finally {
+    fsp.rename = originalRename;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("append 会恢复进程在写入 owner 前遗留的陈旧日志锁", async () => {
+  const { mkdir } = await import("node:fs/promises");
+  const { appendMemoryLog, listPendingMemoryLogs } = require("../src/platform/memory/memdir/memdirJournal.js");
+  const { validateMemoryWrite } = require("../src/platform/memory/memdir/memdirPolicy.js");
+  const root = await mkdtemp(path.join(tmpdir(), "yaoguo-autodream-stale-journal-lock-"));
+  const location = { memoryDirectory: path.join(root, "memory") };
+  try {
+    const logDirectory = path.join(location.memoryDirectory, "logs");
+    await mkdir(path.join(logDirectory, "processed"), { recursive: true });
+    const lockFile = path.join(logDirectory, ".journal.lock");
+    await writeFile(lockFile, "", "utf8");
+    const staleAt = new Date(Date.now() - 30000);
+    await utimes(lockFile, staleAt, staleAt);
+    const memory = validateMemoryWrite({
+      type: "project",
+      basis: TYPE_BASIS.project,
+      topic: "stale-lock",
+      name: "陈旧锁恢复",
+      description: "日志锁恢复的长期行为。",
+      content: "进程崩溃后的不完整锁可以安全恢复。",
+      valueBeyondCode: "避免所有后续记忆写入永久超时。"
+    });
+
+    await appendMemoryLog(location, memory, new Date("2026-08-13T10:00:00.000Z"));
+    const pending = await listPendingMemoryLogs(location);
+    assert.equal(pending.length, 1);
+    assert.match(pending[0].content, /不完整锁可以安全恢复/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

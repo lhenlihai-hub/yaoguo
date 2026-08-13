@@ -194,3 +194,20 @@ test("TUI Ctrl+C 在运行时中止任务，在空闲时干净退出", async () 
   assert.equal(ui.stopped, true);
   assert.equal(terminal.onInput, null);
 });
+
+test("TUI 所有外部文本入口在渲染前移除终端控制序列", async () => {
+  const terminal = new FakeTerminal();
+  const ui = await createTerminalUi({ terminal, workspacePath: "/tmp/work\x1b]0;bad\x07" });
+  ui.start();
+  ui.addUserMessage("用户\x1b]52;c;ZGF0YQ==\x07正文");
+  ui.setBusy(true, "活动\x1b[2J正文");
+  ui.setUsageText("用量\x1b]0;bad\x07正常");
+  ui.setUpdateNotice("更新\x1b[31m提示\x1b[0m");
+  await waitForRender();
+  const output = terminal.text();
+  assert.match(output, /用户正文/);
+  assert.match(output, /活动正文/);
+  assert.match(output, /用量正常/);
+  assert.doesNotMatch(output, /ZGF0YQ|\]52;|\]0;bad/);
+  await ui.dispose();
+});

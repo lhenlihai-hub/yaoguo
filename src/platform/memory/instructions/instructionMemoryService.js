@@ -60,6 +60,7 @@ class InstructionMemoryService {
       ? new InstructionFileLoader({ cache: cacheSession.memoryFiles })
       : this.loader;
     const cached = cacheSession?.userContext.get(contextKey) || null;
+    const today = localDate(this.clock());
     if (cached) {
       return new InstructionMemoryTurn({
         ...config,
@@ -68,7 +69,7 @@ class InstructionMemoryService {
         cwd: canonicalCwd,
         managedRoot: this.managedRoot,
         userRoot: this.userRoot,
-        currentDate: `${cached?.value?.currentDate || ""}`,
+        currentDate: today,
         loader,
         onUserContextChange
       }).resume(cached, Array.isArray(explicitTargets) ? explicitTargets : []);

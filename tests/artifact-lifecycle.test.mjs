@@ -1,14 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 const require = createRequire(import.meta.url);
 const JSZip = require("jszip");
 const { inspectArtifactTool } = require("../src/platform/ai/agentTools/artifactInspectionTool.js");
-const { publishArtifactTool } = require("../src/platform/ai/agentTools/publishArtifactTool.js");
+const {
+  publishArtifactTool,
+  copyPublishedArtifact
+} = require("../src/platform/ai/agentTools/publishArtifactTool.js");
 
 async function createContext(prefix = "yaoguo-artifact-lifecycle-") {
   const taskDir = await mkdtemp(join(tmpdir(), prefix));
@@ -260,6 +263,66 @@ test("publish_artifact 拒绝经 final 符号链接写入任务外部", async ()
   } finally {
     await rm(ctx.taskDir, { recursive: true, force: true });
     await rm(externalDir, { recursive: true, force: true });
+  }
+});
+
+test("publish_artifact 拒绝经悬空符号链接把成品写到用户目录之外", async () => {
+  const ctx = await createContext("yaoguo-artifact-dangling-link-");
+  const externalDir = await mkdtemp(join(tmpdir(), "yaoguo-artifact-dangling-outside-"));
+  try {
+    const workspace = join(ctx.taskDir, "workspace");
+    await mkdir(workspace, { recursive: true });
+    const candidate = join(ctx.taskDir, ".candidates", "report.md");
+    await writeFile(candidate, "# 经检查的报告\n不应写入外部目录。", "utf8");
+    const inspection = await inspectArtifactTool.execute({ path: candidate }, ctx);
+    const plantedTarget = join(externalDir, "planted.md");
+    await symlink(plantedTarget, join(workspace, "report.md")); // 悬空：目标不存在
+    ctx.explicitOutputTargets = [{ path: workspace, kind: "directory" }];
+
+    await assert.rejects(
+      () => publishArtifactTool.execute({
+        path: candidate,
+        inspectionId: inspection.inspectionId
+      }, ctx),
+      /符号链接/
+    );
+
+    await assert.rejects(() => access(plantedTarget), /ENOENT|ENOTDIR|no such file/i);
+    assert.deepEqual(await readdir(externalDir), []);
+  } finally {
+    await rm(ctx.taskDir, { recursive: true, force: true });
+    await rm(externalDir, { recursive: true, force: true });
+  }
+});
+
+test("publish_artifact 授权目录在复制前被换成符号链接时不写穿", async () => {
+  const root = await mkdtemp(join(tmpdir(), "yaoguo-artifact-parent-swap-"));
+  const outside = await mkdtemp(join(tmpdir(), "yaoguo-artifact-parent-outside-"));
+  try {
+    const approved = join(root, "approved");
+    const parked = join(root, "approved-original");
+    const source = join(root, "managed.md");
+    await mkdir(approved);
+    await writeFile(source, "# 已检查的受管快照\n", "utf8");
+    const directoryStat = await stat(approved, { bigint: true });
+    const plan = {
+      kind: "directory",
+      path: approved,
+      directory: approved,
+      directoryIdentity: { dev: `${directoryStat.dev}`, ino: `${directoryStat.ino}` }
+    };
+
+    await rename(approved, parked);
+    await symlink(outside, approved, "dir");
+    await assert.rejects(
+      copyPublishedArtifact(source, plan, "report.md"),
+      /输出目录.*发生变化/
+    );
+    assert.deepEqual(await readdir(outside), [], "替换后的链接目标不得收到文件");
+    assert.deepEqual(await readdir(parked), [], "原目录也不得留下临时或半成品");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });
 

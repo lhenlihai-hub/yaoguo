@@ -144,7 +144,7 @@ function createKernelState({ options, runtime, executionBudget, maxRounds, contr
     emptyTruncations: 0,
     maxEmptyTruncations: normalizePositiveInt(options.maxEmptyTruncations, 3),
     artifactFollowUps: 0,
-    maxArtifactFollowUps: normalizeOptionalPositiveInt(options.maxArtifactFollowUps),
+    maxArtifactFollowUps: normalizePositiveInt(options.maxArtifactFollowUps, 6),
     artifactPendingFingerprint: "",
     stalledArtifactFollowUps: 0,
     maxStalledArtifactFollowUps: normalizePositiveInt(options.maxStalledArtifactFollowUps, 3),
@@ -311,11 +311,30 @@ function prepareTruncatedAgentResponse(state, response) {
       state.emptyTruncations += 1;
     }
     if (state.emptyTruncations >= state.maxEmptyTruncations) {
+      // 已累积的截断文本不能随 stall 一起丢弃：合并进最终响应后正常结束。
+      const parts = state.truncatedTextParts;
+      state.truncatedTextParts = [];
+      state.emptyTruncations = 0;
       state.pendingTruncationFollowUp = false;
+      const merged = parts.length ? mergeContinuationText(parts) : "";
+      if (merged) {
+        state.stopCode = "MODEL_OUTPUT_TRUNCATION_STALLED";
+        return {
+          ...response,
+          content: merged,
+          finishReason: "stop",
+          ...(response?.assistantMessage ? {
+            assistantMessage: {
+              ...response.assistantMessage,
+              content: merged || null
+            }
+          } : {})
+        };
+      }
       state.stopCode = "MODEL_OUTPUT_TRUNCATION_STALLED";
-    } else {
-      state.pendingTruncationFollowUp = true;
+      return response;
     }
+    state.pendingTruncationFollowUp = true;
     return response;
   }
   if (hasTools || !state.truncatedTextParts.length) return response;
@@ -439,11 +458,11 @@ function takeArtifactFollowUp(state) {
   if (state.options.requireResolvedArtifacts !== true) return [];
   const pending = unresolvedArtifactCandidates(state.runtime?.loopToolCtx?.artifactCandidates);
   if (!pending.length) return [];
-  const fingerprint = JSON.stringify(pending.map((candidate) => [
-    `${candidate?.absolute || ""}`,
-    `${candidate?.status || ""}`,
-    `${candidate?.inspectionId || ""}`
-  ]).sort((left, right) => left[0].localeCompare(right[0])));
+  // 停滞判定只看“未收敛的候选集合”是否变化：inspectionId / status 的交替
+  // 不再重置计数，防止模型在 inspect 与候选间切换刷出无限续轮。
+  const fingerprint = JSON.stringify(pending.map((candidate) => (
+    `${candidate?.absolute || ""}`
+  )).sort((left, right) => left.localeCompare(right)));
   if (fingerprint === state.artifactPendingFingerprint) state.stalledArtifactFollowUps += 1;
   else state.stalledArtifactFollowUps = 0;
   state.artifactPendingFingerprint = fingerprint;
@@ -512,7 +531,9 @@ async function finalizeAgentLoop(state, transcript) {
       || (unfinishedToolTurn
         ? "AGENT_ROUND_LIMIT"
         : (state.terminalProtocolLeakDetected ? "AGENT_TOOL_PROTOCOL_LEAK" : "AGENT_EMPTY_RESULT")))
-    : "";
+    // 有可交付文本时仍保留 state.stopCode（如截断续写恢复、artifact 未收敛），
+    // 作为“成功但带终止原因”的遥测注解，不改变 text/exhausted 语义。
+    : (state.stopCode || "");
   return buildAgentResult(state, text, transcript, {
     exhausted: !text.trim(),
     budgetExhausted: state.executionBudget.remaining("tool") <= 0 || isBudgetStopCode(stopCode),

@@ -136,14 +136,20 @@ async buildAgentConversationMessages({
   const totalTokens = Number(config.tokens) || 24000;
   const picked = [];
   let used = 0;
+  let clipped = false;
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const row = rows[index];
     const persistedModelInput = row.role === "user" && row.turnId
       ? modelInputs.get(`${row.turnId}`)
       : "";
-    const content = persistedModelInput || `${row.content || ""}`;
-    const tokens = estimateTokens(content);
-    if (tokens > totalTokens) break;
+    let content = persistedModelInput || `${row.content || ""}`;
+    let tokens = estimateTokens(content);
+    if (tokens > totalTokens) {
+      // 单条消息超过整段预算时压缩到预算内，而不是丢弃全部历史。
+      content = headTailForPromptTokens(content, totalTokens);
+      tokens = estimateTokens(content);
+      clipped = true;
+    }
     if (picked.length && used + tokens > totalTokens) break;
     picked.unshift({
       role: row.role === "assistant" ? "assistant" : "user",
@@ -152,6 +158,20 @@ async buildAgentConversationMessages({
     });
     used += tokens;
     if (used >= totalTokens) break;
+  }
+  if (clipped && typeof this.taskSessionStore?.externalizeHistory === "function" && projectId && taskId) {
+    try {
+      const file = await this.taskSessionStore.externalizeHistory({ projectId, taskId });
+      picked.push({
+        role: "user",
+        modelReady: true,
+        content: [
+          "【历史未静默丢失】内联窗口包含被压缩的超预算消息；完整任务历史已无损外置。",
+          `路径：${file.absolute}`,
+          "需要被裁掉或压缩的中间内容时，使用 read(offset, limit) 分页读取。"
+        ].join("\n")
+      });
+    } catch { /* 外置失败不阻塞本轮：压缩已保留首尾，本提示缺失不改变执行语义。 */ }
   }
   return picked;
 },

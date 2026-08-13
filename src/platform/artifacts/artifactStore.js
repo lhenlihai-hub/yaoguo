@@ -19,11 +19,15 @@ const { estimateTokens, hashObject, sha1 } = require("../shared/text");
 const { isPathInside } = require("../shared/pathSafety");
 const { WorkspaceLayout } = require("../storage/workspaceLayout");
 const { splitIntoChunks, tokenize, buildBM25Index, searchBM25, extractSnippet } = require("./chunkIndex");
+const { KeyedSerialExecutor } = require("../shared/keyedSerialExecutor");
 
 class ArtifactStore {
   constructor(paths = {}) {
     this.paths = paths;
     this.layout = new WorkspaceLayout(paths);
+    // index.json 是读-改-写：并发保存（前台 Agent + 后台任务/并行 run）会丢索引
+    // 条目。按 projectId 串行化 upsert，读侧不受影响。
+    this.indexWrites = new KeyedSerialExecutor();
   }
 
   async ensureProject(projectId = "") {
@@ -127,30 +131,32 @@ class ArtifactStore {
 
   async upsertProjectIndex(projectId = "", artifact = {}) {
     if (!projectId) return null;
-    const indexFile = path.join(this.layout.artifactDir(projectId), "index.json");
-    const index = await readJson(indexFile, { version: 1, artifacts: [] }) || { version: 1, artifacts: [] };
-    const artifacts = Array.isArray(index.artifacts) ? index.artifacts : [];
-    const next = artifacts.filter((item) => item.id !== artifact.id);
-    next.push({
-      id: artifact.id,
-      artifactType: artifact.artifactType,
-      title: artifact.title,
-      projectId: artifact.projectId,
-      taskId: artifact.taskId,
-      runId: artifact.runId,
-      stepId: artifact.stepId,
-      contentHash: artifact.contentHash,
-      estimatedTokens: artifact.estimatedTokens,
-      updatedAt: artifact.updatedAt,
-      paths: artifact.paths
+    return this.indexWrites.run(`project:${projectId}`, async () => {
+      const indexFile = path.join(this.layout.artifactDir(projectId), "index.json");
+      const index = await readJson(indexFile, { version: 1, artifacts: [] }) || { version: 1, artifacts: [] };
+      const artifacts = Array.isArray(index.artifacts) ? index.artifacts : [];
+      const next = artifacts.filter((item) => item.id !== artifact.id);
+      next.push({
+        id: artifact.id,
+        artifactType: artifact.artifactType,
+        title: artifact.title,
+        projectId: artifact.projectId,
+        taskId: artifact.taskId,
+        runId: artifact.runId,
+        stepId: artifact.stepId,
+        contentHash: artifact.contentHash,
+        estimatedTokens: artifact.estimatedTokens,
+        updatedAt: artifact.updatedAt,
+        paths: artifact.paths
+      });
+      await writeJsonAtomic(indexFile, {
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        artifacts: next.sort((a, b) => `${b.updatedAt || ""}`.localeCompare(`${a.updatedAt || ""}`)),
+        indexHash: hashObject(next)
+      });
+      return indexFile;
     });
-    await writeJsonAtomic(indexFile, {
-      version: 1,
-      updatedAt: new Date().toISOString(),
-      artifacts: next.sort((a, b) => `${b.updatedAt || ""}`.localeCompare(`${a.updatedAt || ""}`)),
-      indexHash: hashObject(next)
-    });
-    return indexFile;
   }
 
   // ---- 索引建立 ----
